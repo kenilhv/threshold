@@ -7,9 +7,11 @@ The name is the argument. The system's entire job is to hold a defensible line
 between what a machine may execute alone and what a human must decide, and to
 show where that line is and why it sits there.
 
-> **Status: M0.** The stack runs, the schema migrates, the seed loads. Document
-> ingestion is M1 and the milestones below are honest about what does not exist
-> yet. Every claim in this README is checkable against the repository today.
+> **Status: M2.** The stack runs, a PDF ingests, and the extraction happens on
+> a worker pulling from a durable queue rather than on the request thread. Kill
+> the worker mid-job and the work survives — `make demo-crash` shows it. The
+> milestones below are honest about what does not exist yet. Every claim in this
+> README is checkable against the repository today.
 
 ---
 
@@ -36,8 +38,28 @@ Then prove it actually works rather than merely started:
 make smoke
 ```
 
-Other useful targets: `make logs`, `make ps`, `make down`, `make clean`
-(destroys volumes), `make migrate-roundtrip`, `make verify`.
+Nineteen checks, none of which trust `docker compose ps`: the audit trigger is
+asked to allow an UPDATE and must refuse, a real PDF is ingested twice and must
+produce one document, and the queue is inspected for jobs holding an expired
+lease.
+
+To watch the durability claim hold under an actual crash:
+
+```bash
+make demo-crash
+```
+
+It `SIGKILL`s the worker container while it holds a lease — no graceful
+shutdown, no cleanup — then shows the reaper returning the job with its attempt
+history intact.
+
+`make test-integration` runs against the live stack. The queue tests provision
+and migrate their own database (`threshold_queue_tests`) rather than sharing one
+with the running worker, which is a real competing consumer — see D-012.
+
+Other useful targets: `make logs`, `make ps`, `make queue-stats`, `make dlq`,
+`make replay id=<uuid>`, `make reap`, `make down`, `make clean` (destroys
+volumes), `make migrate-roundtrip`, `make verify`.
 
 Requires Docker with Compose v2. No cloud account, no API keys, no paid
 services.
@@ -93,7 +115,16 @@ Full reasoning, including what is deliberately *not* distributed and why:
       two independent layers. A deterministic extraction tier runs with no model
       weights, no API key and no network, so CI exercises the real pipeline. Four
       byte-deterministic fixture layouts carry the shapes that break extractors.
-- [ ] M2 — durable job execution: Postgres queue, leases, backoff, dead-letter, replay
+- [x] **M2 — durable job execution.** A Postgres queue behind a narrow `Queue`
+      port: `SELECT … FOR UPDATE SKIP LOCKED` for contention-free claims,
+      two-minute leases, three attempts, exponential backoff from five seconds,
+      and a dead-letter table with a replay path. Jobs are enqueued in the same
+      transaction as the state change that caused them, so the two cannot
+      disagree. A claim is a state change, never a delete, which is what makes a
+      killed worker's job recoverable rather than gone. An integration test runs
+      four workers against forty jobs and asserts each was claimed exactly once;
+      `make demo-crash` kills a worker holding a lease and shows the work
+      return.
 - [ ] M3 — three-way match, the frozen exception taxonomy, owner routing
 - [ ] M4 — the operator console
 - [ ] M5 — OpenTelemetry end to end, dashboards, alert rules, runbooks

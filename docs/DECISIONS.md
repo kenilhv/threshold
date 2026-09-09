@@ -5,6 +5,226 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-012 — The queue tests own their database, and `claim` sorts what it returns
+
+**Date:** 2026-09-09 · **Status:** accepted
+
+Two findings, one cause: the queue tests had been sharing a database with a
+live worker.
+
+`make up` leaves a worker polling the application database once a second. It is
+a real consumer running the same claim query, so it competes for jobs a test
+just enqueued and then fails them, because their payloads name documents that do
+not exist. Every assertion about who claimed what, how many attempts a job has,
+and what reached the dead-letter table was only holding because the worker
+happened to be down. A suite that passes because another process is broken is
+not passing.
+
+So `tests/integration/test_queue.py` provisions `threshold_queue_tests`, migrates
+it with Alembic and runs there. Alembic rather than `Base.metadata.create_all()`:
+the partial indexes are hand-written in `0003_job_queue` because SQLAlchemy
+cannot express their predicates, so a schema built from the models would quietly
+omit `uq_job_dedupe_key` — the exact constraint several of those tests exist to
+verify. The API tests keep using the application database, because they *want* a
+live worker: that is the thing they are testing.
+
+Running on a fresh database immediately exposed a real bug the shared one had
+been hiding. `claim()` selects with `ORDER BY run_after, created_at` inside the
+subquery, which decides *which* rows are taken — but `UPDATE … RETURNING` makes
+no promise about the order rows come back in, and Postgres returns them roughly
+in heap order. On a table that has seen deletes and is reusing free space, heap
+order stops matching insertion order and a batch comes back shuffled. The queue
+was FIFO in the part nobody observes and not FIFO in the part a worker actually
+sees. `claim()` now re-sorts its result.
+
+Neither of these is exotic. Both are the ordinary consequence of testing against
+a database that something else is also using, which is worth the cost of the
+extra database on its own.
+
+---
+
+## D-011 — A failed claim retries in-process; only a crash needs Docker
+
+**Date:** 2026-09-09 · **Status:** accepted
+
+Found by running `make migrate-roundtrip` against a live stack. The downgrade
+dropped the `job` table underneath a polling worker, the claim raised
+`UndefinedTableError`, the exception escaped `run_forever`, and the process
+exited. Compose leaves `restart` at its default, so the container stayed down.
+The API went on accepting documents and queueing jobs that nobody would ever
+run, and nothing anywhere said so.
+
+The schema vanishing is not the interesting part — that was self-inflicted. The
+same path is a Postgres restart, an RDS failover, a connection reset, or a
+migration running during a deploy, all of which are routine, all of which are
+brief, and any of which would have permanently drained the pool.
+
+So the claim loop now catches, logs, and backs off exponentially from the poll
+interval to a thirty-second cap, resetting on the first success. This is safe in
+a way that retrying is usually not: a claim that raised has claimed nothing, so
+there is no partial work to reconcile and no lease to lose. `_execute` already
+settled its failures against the job and `_reap_loop` already guarded itself —
+the claim path was simply the one that never got the treatment.
+
+`restart: unless-stopped` on `api` and `worker` is the backstop for what
+in-process handling cannot cover, which is a crash. It is deliberately not the
+mechanism: a pool that needs Docker to notice a ten-second blip has already
+dropped whatever it was holding, and on ECS or Kubernetes the supervisor's
+reaction time is worse, not better. The one-shot `migrate`, `seed` and
+`minio-init` services keep `restart: "no"` — a job that reruns itself is not a
+job.
+
+Two things this deliberately does not do. It does not distinguish a transient
+database error from a permanent one, because at the claim site that distinction
+cannot be made honestly — `UndefinedTableError` is permanent during a downgrade
+and transient during a deploy, and the same exception carries both. And it does
+not give up after N consecutive failures, so a worker pointed at a database that
+will never come back retries until someone stops it. Both are the right trade
+while the failure is loud in the logs; neither survives contact with a system
+nobody is watching, which is what M5's alert rules are for.
+
+Regression test: `TestPoolSurvivesADatabaseOutage` in
+`tests/integration/test_queue.py`. It wraps the real queue so the first three
+claims raise, then asserts the worker was still claiming afterwards and the job
+ran. Reverting the guard makes it fail.
+
+---
+
+## D-010 — A dead worker's attempt is not counted against the job
+
+**Date:** 2026-09-09 · **Status:** accepted
+
+`reap_expired_leases()` returns a job to `pending` and clears the claim, but
+deliberately does not increment `attempts`. The claim already incremented it;
+counting it again would charge the job twice for one try.
+
+The reason is whose fault the failure was. A job that fails three times because
+the document is unreadable has used its budget legitimately. A job whose worker
+was `SIGKILL`ed by an OOM killer has not failed at all — the infrastructure
+did — and halving its remaining retries punishes the work for something it had
+no part in. In a pool that is being rolled or rescheduled, that difference is
+the difference between a deploy that is invisible and a deploy that dead-letters
+a slice of the queue.
+
+`scripts/demo_crash_recovery.sh` asserts this directly: it prints `attempts`
+before and after the reap and calls out that it is still 1.
+
+The cost is that a job which reliably kills its worker — a payload that
+segfaults a parser, say — is retried forever rather than dead-lettering. That is
+the right trade at this size, because such a job also takes the worker down and
+so becomes visible immediately, but it is a real hole and a poison-pill detector
+belongs here before this runs unattended.
+
+---
+
+## D-009 — Deduplication is a partial unique index, not a lookup
+
+**Date:** 2026-09-09 · **Status:** accepted · **Has a known, unpaid cost**
+
+`enqueue(dedupe_key=…)` does not check for an existing job and then insert.
+Between the check and the insert, another worker can insert — the classic
+read-modify-write race, which under concurrency produces exactly the duplicate
+the key exists to prevent. Instead the uniqueness is a database constraint and
+the insert absorbs the collision:
+
+```python
+base = insert(Job).values(**values)
+if dedupe_key is not None:
+    base = base.on_conflict_do_nothing(
+        index_elements=[Job.dedupe_key],
+        index_where=text("dedupe_key IS NOT NULL AND state IN ('pending', 'claimed')"),
+    )
+```
+
+The index is partial, and that is the whole design: a `dedupe_key` is unique
+only among jobs that are still `pending` or `claimed`. Once a job succeeds or
+dies, the key is free again, so "do not run this twice concurrently" does not
+silently become "never run this again", which would make a retry after a failure
+impossible.
+
+Two things here were bugs before they were decisions, and both are the kind that
+only appear under load:
+
+- `index_where` is not optional. Without it Postgres cannot match the partial
+  index and raises `InvalidColumnReferenceError: there is no unique or exclusion
+  constraint matching the ON CONFLICT specification`. Every deduplicated enqueue
+  would have failed — and the unit tests, which exercise the in-memory queue,
+  would not have noticed.
+- `on_conflict_do_nothing()` must be applied **before** `.returning()`. The
+  other order compiles and silently drops the conflict clause.
+
+The unpaid cost is the flip side of freeing the key on success: re-submitting
+the same document after its extraction finished enqueues a second, redundant
+extraction. The queue is right to allow it; the caller has to decide. So
+`IngestService` checks for an existing extraction and skips the enqueue rather
+than the queue pretending the work is still in flight.
+
+---
+
+## D-008 — The enqueue commits with the state change, or not at all
+
+**Date:** 2026-09-09 · **Status:** accepted
+
+`Queue.enqueue()` takes the caller's `AsyncSession` rather than opening its own.
+Ingestion therefore writes the `document` row and the `job` row in one
+transaction, and either both land or neither does.
+
+This is the transactional outbox, and it is the reason there is no broker here.
+With SQS or RabbitMQ, "insert the row" and "publish the message" are two systems
+and there is no commit that spans them: publish first and a rollback leaves a
+message about a document that does not exist; publish second and a crash between
+them leaves a document nobody will ever process. Every mitigation for that —
+outbox tables, two-phase commit, reconciliation sweeps — is machinery to buy back
+what one database gives away for free.
+
+The cost is stated plainly in the architecture doc: this does not fan out, it
+does not replay a topic, and the polling loop becomes the bottleneck somewhere
+above a few hundred jobs per second. Accounts payable is hundreds of invoices
+per **day**. A `Queue` protocol marks the seam, and `PostgresJobQueue` is its
+only implementation — there is no SQS adapter here, and moving to one would not
+be free, because the single commit this decision buys is exactly the thing a
+broker cannot give back. The protocol makes that cost visible at the type level
+rather than leaving it to be discovered.
+
+One consequence worth knowing before it confuses someone: jobs enqueued inside a
+single transaction share one `now()`, because Postgres freezes
+`CURRENT_TIMESTAMP` per transaction. Their `run_after` values are identical and
+their relative claim order is therefore undefined. Nothing depends on it, but a
+test that assumes FIFO within a batch will flake.
+
+---
+
+## D-007 — Claiming a job is a state change, never a delete
+
+**Date:** 2026-09-09 · **Status:** accepted
+
+A worker claims a job by updating it — `state = 'claimed'`, `claimed_by`,
+`claimed_at`, `lease_expires_at`, `attempts + 1` — inside
+`SELECT … FOR UPDATE SKIP LOCKED`. It never deletes the row and never holds the
+job in process memory.
+
+`SKIP LOCKED` is what makes the pool scale without coordination: a worker whose
+candidate row is already locked steps over it rather than queueing behind it, so
+N workers do not serialise on the head of the queue. The integration suite runs
+four workers against forty jobs and asserts every job was claimed exactly once.
+
+The delete-on-claim alternative is the more obvious design and it is why so many
+homegrown queues lose work. Once the row is gone, the only record that the job
+exists is in the memory of the process holding it, and a `SIGKILL` — an OOM
+kill, a node preemption, a `docker compose kill` — takes that record with it.
+There is nothing left to recover from.
+
+Because the row survives, recovery is just noticing that a lease expired. The
+reaper (running under advisory lock `0x74855170`, so exactly one worker sweeps
+regardless of pool size) returns any job whose `lease_expires_at` is in the past
+to `pending`, with its payload and attempt history untouched.
+
+The cost is that the queue is a table that grows and needs a retention policy,
+and that every claim is a write, so the queue is not free at high throughput.
+Both are acceptable at this volume; neither is a correctness problem.
+
+---
+
 ## D-006 — Store the object before writing the row
 
 **Date:** 2026-09-09 · **Status:** accepted · **Has a known, unpaid cost**

@@ -23,6 +23,7 @@ outcome than a row that promises bytes nobody has.
 from __future__ import annotations
 
 import hashlib
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
@@ -33,6 +34,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from threshold.adapters.extraction.port import Extractor
 from threshold.adapters.object_store import ObjectStore, storage_key_for
+from threshold.adapters.queue import Queue
+from threshold.domain.jobs import JobKind
 from threshold.domain.models import AuditEvent, Document, Extraction
 
 log = structlog.get_logger(__name__)
@@ -64,20 +67,22 @@ class UnsupportedDocumentTypeError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class IngestOutcome:
-    """What happened, in enough detail for the caller to be honest about it."""
+    """What happened, in enough detail for the caller to be honest about it.
+
+    Deliberately says nothing about extraction. The request stores the document
+    and enqueues the work; extraction happens on a worker moments later. A
+    response that reported a confidence score would be claiming knowledge the
+    system does not have yet.
+    """
 
     document_id: str
     content_sha256: str
     #: False when the bytes were already known. The caller returns 200 rather
     #: than 201, because nothing was created.
     created: bool
-    extraction_id: str
-    extraction_version: int
-    lowest_decision_confidence: Decimal
-    #: Whether every decision-relevant field cleared the confidence gate. In M3
-    #: this becomes the input to auto-approval; for now it is reported so the
-    #: behaviour is visible before anything depends on it.
-    meets_confidence_gate: bool
+    #: None when a live job already covers this document — the dedupe key
+    #: suppressed a second enqueue.
+    job_id: str | None
 
 
 #: Derived from a calibration curve in M6. Stated as a constant now, and
@@ -87,9 +92,20 @@ PROVISIONAL_CONFIDENCE_GATE: Final = Decimal("0.80")
 
 
 class IngestService:
-    def __init__(self, store: ObjectStore, extractor: Extractor) -> None:
+    def __init__(self, store: ObjectStore, extractor: Extractor, queue: Queue) -> None:
         self._store = store
         self._extractor = extractor
+        self._queue = queue
+
+    @property
+    def store(self) -> ObjectStore:
+        """Exposed so the extraction job can fetch the bytes back.
+
+        The queue payload carries a document id, never the document. A payload
+        holding a 20 MB PDF would make the job table the document store and drag
+        those bytes across the wire on every claim.
+        """
+        return self._store
 
     async def ingest(
         self,
@@ -114,21 +130,9 @@ class IngestService:
         if existing is not None:
             # The same bytes arriving twice is the most common real duplicate:
             # a supplier resending a PDF, or an inbox polled twice. It is not an
-            # error, and it must not create a second document.
+            # error, and it must not create a second document — nor a second
+            # extraction job, which the dedupe key below suppresses.
             log.info("ingest.duplicate_content", document_id=str(existing.id), sha256=digest)
-            extraction = await self._latest_extraction(session, existing)
-            if extraction is not None:
-                return IngestOutcome(
-                    document_id=str(existing.id),
-                    content_sha256=digest,
-                    created=False,
-                    extraction_id=str(extraction.id),
-                    extraction_version=extraction.version,
-                    lowest_decision_confidence=extraction.lowest_decision_confidence,
-                    meets_confidence_gate=(
-                        extraction.lowest_decision_confidence >= PROVISIONAL_CONFIDENCE_GATE
-                    ),
-                )
             document = existing
             created = False
         else:
@@ -164,18 +168,36 @@ class IngestService:
             created = True
             log.info("ingest.stored", document_id=str(document.id), bytes=len(content))
 
-        extraction = await self._extract_and_store(session, document, content, content_type)
+        # Nothing to do for bytes that already have an extraction.
+        #
+        # The dedupe key alone does not cover this: the partial unique index
+        # only holds while a job is pending or claimed, so once the first
+        # extraction succeeds the key frees and a re-submission would enqueue a
+        # second identical run. Re-extracting the same bytes with the same
+        # extractor produces the same answer at version 2 — pure waste.
+        #
+        # Deliberately NOT a guard against re-extraction in general: that is a
+        # real operation, and it is how a document gets replayed against a new
+        # model in M6. It just should not happen by accident on an upload.
+        already_extracted = await self._latest_extraction(session, document) is not None
+
+        job_id: uuid.UUID | None = None
+        if not already_extracted:
+            # Enqueued in the SAME transaction as the document row. That is the
+            # entire reason the queue is a table: there is no window in which
+            # the document exists and the work to process it does not.
+            job_id = await self._queue.enqueue(
+                session,
+                kind=JobKind.EXTRACT_DOCUMENT,
+                payload={"document_id": str(document.id)},
+                dedupe_key=f"extract:{digest}",
+            )
 
         return IngestOutcome(
             document_id=str(document.id),
             content_sha256=digest,
             created=created,
-            extraction_id=str(extraction.id),
-            extraction_version=extraction.version,
-            lowest_decision_confidence=extraction.lowest_decision_confidence,
-            meets_confidence_gate=(
-                extraction.lowest_decision_confidence >= PROVISIONAL_CONFIDENCE_GATE
-            ),
+            job_id=str(job_id) if job_id else None,
         )
 
     async def _latest_extraction(
@@ -188,6 +210,21 @@ class IngestService:
             .limit(1)
         )
         return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def extract_existing(
+        self,
+        session: AsyncSession,
+        document: Document,
+        content: bytes,
+    ) -> Extraction:
+        """Read a stored document and persist the next extraction version.
+
+        Called from the worker, never from a request handler. Extraction takes
+        tens of milliseconds on the deterministic tier and is budgeted at ninety
+        seconds on the model tier, and a ninety-second HTTP request is the
+        clearest possible sign that a system has never been operated.
+        """
+        return await self._extract_and_store(session, document, content, document.content_type)
 
     async def _extract_and_store(
         self,

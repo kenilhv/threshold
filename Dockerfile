@@ -29,7 +29,10 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
-    PYTHONPATH=/app/src
+    # /app as well as /app/src: the operational CLI lives in scripts/ and is
+    # run inside this image (python -m scripts.queuectl), so it has to be
+    # importable, not just the package.
+    PYTHONPATH=/app/src:/app
 
 RUN groupadd --system --gid 1001 threshold \
  && useradd --system --uid 1001 --gid threshold --create-home threshold

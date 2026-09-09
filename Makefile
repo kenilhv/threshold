@@ -80,8 +80,30 @@ fmt: ## Apply formatting and fixable lints
 .PHONY: verify
 verify: lint test ## What CI runs on every commit
 
+# ----------------------------------------------------------------- queue ---
+
+.PHONY: queue-stats
+queue-stats: ## Queue depth by state
+	$(COMPOSE) exec -T api python -m scripts.queuectl stats
+
+.PHONY: dlq
+dlq: ## List unreplayed dead letters
+	$(COMPOSE) exec -T api python -m scripts.queuectl dlq
+
+.PHONY: replay
+replay: ## Replay a dead letter:  make replay id=<uuid>   (or id=--all)
+	$(COMPOSE) exec -T api python -m scripts.queuectl replay $(id)
+
+.PHONY: reap
+reap: ## Return jobs whose worker died
+	$(COMPOSE) exec -T api python -m scripts.queuectl reap
+
 # ------------------------------------------------------------------ demo ---
 
 .PHONY: smoke
 smoke: ## Prove the running stack is healthy end to end
 	@bash scripts/smoke.sh
+
+.PHONY: demo-crash
+demo-crash: ## SIGKILL a worker mid-job and watch the work survive
+	@bash scripts/demo_crash_recovery.sh

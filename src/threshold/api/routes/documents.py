@@ -44,21 +44,24 @@ router = APIRouter(prefix="/v1/documents", tags=["documents"])
 
 
 class IngestResponse(BaseModel):
+    """Accepted, not processed.
+
+    Deliberately reports nothing about extraction: the request stores the
+    document and enqueues the work, and a response carrying a confidence score
+    would be claiming knowledge the system does not have yet. Poll
+    GET /v1/documents/{id} for the result.
+    """
+
     document_id: str
     content_sha256: str
     created: bool = Field(
         description="False when these exact bytes were already known to the system."
     )
-    extraction_id: str
-    extraction_version: int
-    lowest_decision_confidence: str = Field(
+    job_id: str | None = Field(
         description=(
-            "Minimum confidence across the fields a payment decision depends on. "
-            "A string, because it is a Decimal and JSON floats lose precision."
+            "The enqueued extraction job. None when a job for this document was "
+            "already queued and the dedupe key suppressed a second one."
         )
-    )
-    meets_confidence_gate: bool = Field(
-        description="Whether every decision-relevant field cleared the provisional threshold."
     )
 
 
@@ -85,10 +88,11 @@ class DocumentDetail(BaseModel):
 @router.post(
     "",
     response_model=IngestResponse,
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_202_ACCEPTED,
     summary="Submit a document for extraction",
     responses={
         200: {"description": "These bytes were already ingested; nothing was created."},
+        202: {"description": "Stored and queued. Poll GET /v1/documents/{id} for the result."},
         409: {"description": "The Idempotency-Key was reused for a different request."},
         413: {"description": "Document exceeds the size limit."},
         415: {"description": "Unsupported content type."},
@@ -153,15 +157,13 @@ async def submit_document(
         document_id=outcome.document_id,
         content_sha256=outcome.content_sha256,
         created=outcome.created,
-        extraction_id=outcome.extraction_id,
-        extraction_version=outcome.extraction_version,
-        lowest_decision_confidence=str(outcome.lowest_decision_confidence),
-        meets_confidence_gate=outcome.meets_confidence_gate,
+        job_id=outcome.job_id,
     )
 
-    # 201 only when something was actually created. A duplicate is a successful
-    # 200 — the caller's intent is satisfied and nothing new exists.
-    status_code = status.HTTP_201_CREATED if outcome.created else status.HTTP_200_OK
+    # 202 when work was queued, because processing has not finished and the
+    # caller must poll. 200 for a duplicate: nothing was created and nothing
+    # new was queued.
+    status_code = status.HTTP_202_ACCEPTED if outcome.created else status.HTTP_200_OK
     response.status_code = status_code
 
     if idempotency_key is not None:

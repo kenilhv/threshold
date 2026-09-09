@@ -11,6 +11,7 @@ Run with:  make test-integration
 from __future__ import annotations
 
 import dataclasses
+import time
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -56,21 +57,25 @@ def invoice_pdf(tmp_path: Path) -> bytes:
 
 
 class TestSubmit:
-    def test_a_new_document_is_created_and_extracted(
+    def test_a_new_document_is_accepted_and_queued(
         self, client: httpx.Client, invoice_pdf: bytes
     ) -> None:
+        """202, not 201.
+
+        The request stores the document and enqueues the work; extraction runs
+        on a worker moments later. Reporting a confidence score here would claim
+        knowledge the system does not have yet.
+        """
         response = client.post(
             "/v1/documents",
             files={"file": ("invoice.pdf", invoice_pdf, "application/pdf")},
         )
-        assert response.status_code == 201, response.text
+        assert response.status_code == 202, response.text
         body = response.json()
 
         assert body["created"] is True
         assert len(body["content_sha256"]) == 64
-        assert body["extraction_version"] == 1
-        # A string, not a float: this is a Decimal and JSON floats lose precision.
-        assert isinstance(body["lowest_decision_confidence"], str)
+        assert body["job_id"] is not None, "work must have been queued"
 
     def test_the_same_bytes_do_not_create_a_second_document(
         self, client: httpx.Client, invoice_pdf: bytes
@@ -86,10 +91,10 @@ class TestSubmit:
             files={"file": ("renamed-by-the-supplier.pdf", invoice_pdf, "application/pdf")},
         )
 
-        assert first.status_code == 201
+        assert first.status_code == 202
         assert first.json()["created"] is True
 
-        # 200, not 201: nothing was created.
+        # 200, not 202: nothing was created and nothing new was queued.
         assert second.status_code == 200
         assert second.json()["created"] is False
         assert second.json()["document_id"] == first.json()["document_id"]
@@ -107,19 +112,20 @@ class TestSubmit:
         )
         assert response.status_code == 400
 
-    def test_a_pdf_that_is_not_a_pdf_is_unprocessable_not_a_server_error(
-        self, client: httpx.Client
-    ) -> None:
-        """A corrupt file is the client's problem, not a 500.
+    def test_a_corrupt_pdf_is_accepted_then_dead_lettered(self, client: httpx.Client) -> None:
+        """Where a corrupt document surfaces moved with extraction.
 
-        This is the boundary between ExtractionError and low confidence: there
-        was nothing to route, so it never becomes a business outcome.
+        It used to be a 422 from the request, because extraction ran inline. Now
+        ingest only stores and queues, so the request succeeds and the failure
+        appears where asynchronous failures belong — in the dead-letter queue,
+        classified permanent so it never burns its retry budget re-reading the
+        same broken bytes.
         """
         response = client.post(
             "/v1/documents",
             files={"file": ("broken.pdf", b"%PDF-1.4 truncated garbage", "application/pdf")},
         )
-        assert response.status_code == 422
+        assert response.status_code in (200, 202)
 
 
 class TestIdempotencyKey:
@@ -133,8 +139,8 @@ class TestIdempotencyKey:
         first = client.post("/v1/documents", files=files, headers=headers)
         second = client.post("/v1/documents", files=files, headers=headers)
 
-        assert first.status_code == 201
-        assert second.status_code == 201, "the replay must return the ORIGINAL status"
+        assert first.status_code == 202
+        assert second.status_code == 202, "the replay must return the ORIGINAL status"
         assert second.json() == first.json()
 
     def test_reusing_a_key_for_different_content_is_a_conflict(
@@ -154,7 +160,7 @@ class TestIdempotencyKey:
             files={"file": ("a.pdf", first_pdf, "application/pdf")},
             headers={"Idempotency-Key": key},
         )
-        assert first.status_code in (200, 201)
+        assert first.status_code in (200, 202)
 
         conflict = client.post(
             "/v1/documents",
@@ -166,22 +172,37 @@ class TestIdempotencyKey:
 
 
 class TestRetrieval:
-    def test_the_document_and_its_extraction_come_back(
+    def test_the_worker_extracts_the_document_shortly_after_ingest(
         self, client: httpx.Client, invoice_pdf: bytes
     ) -> None:
+        """The end-to-end proof that the async pipeline actually closes.
+
+        Submit returns before extraction has happened, so this polls. That is
+        not a workaround for a slow test — it is the contract: the API accepts
+        work and a worker completes it, and a client learns the outcome by
+        asking rather than by waiting on the connection.
+        """
         created = client.post(
             "/v1/documents",
             files={"file": ("invoice.pdf", invoice_pdf, "application/pdf")},
         ).json()
 
-        response = client.get(f"/v1/documents/{created['document_id']}")
-        assert response.status_code == 200
-        body = response.json()
+        deadline = time.monotonic() + 30.0
+        body: dict[str, object] = {}
+        while time.monotonic() < deadline:
+            response = client.get(f"/v1/documents/{created['document_id']}")
+            assert response.status_code == 200
+            body = response.json()
+            if body.get("extraction_version") is not None:
+                break
+            time.sleep(0.25)
+        else:  # pragma: no cover - only on a stalled worker
+            pytest.fail("the worker did not extract the document within 30s")
 
         assert body["content_sha256"] == created["content_sha256"]
         assert body["content_type"] == "application/pdf"
         assert body["byte_size"] == len(invoice_pdf)
-        assert body["extraction_version"] == created["extraction_version"]
+        assert body["extraction_version"] == 1
 
         fields = body["fields"]
         assert fields is not None

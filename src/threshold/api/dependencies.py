@@ -12,6 +12,7 @@ from functools import lru_cache
 from threshold.adapters.extraction.deterministic import DeterministicExtractor
 from threshold.adapters.extraction.port import Extractor
 from threshold.adapters.object_store import ObjectStore, S3ObjectStore
+from threshold.adapters.queue import PostgresJobQueue, Queue
 from threshold.config.settings import get_settings
 from threshold.services.ingest import IngestService
 
@@ -30,5 +31,10 @@ def get_extractor() -> Extractor:
 
 
 @lru_cache
+def get_queue() -> Queue:
+    return PostgresJobQueue()
+
+
+@lru_cache
 def get_ingest_service() -> IngestService:
-    return IngestService(store=get_object_store(), extractor=get_extractor())
+    return IngestService(store=get_object_store(), extractor=get_extractor(), queue=get_queue())

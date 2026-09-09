@@ -34,9 +34,11 @@ Operator console (Next.js) ── human approves / rejects / holds
 Payment executor (Go) — idempotency key, double-entry ledger, Stripe sandbox
 ```
 
-Built today: the API, the schema, the audit log, the object store, the identity
-realm, and a worker process that starts and stops cleanly. Everything from the
-queue rightwards is M2 onwards.
+Built today: everything down to and including the worker pool. A PDF ingests,
+the job is enqueued in the same transaction as the document row, and a worker
+claims it, extracts it and writes an immutable versioned extraction. The
+`extract` step currently runs the deterministic tier; the model tier arrives with
+M7. Everything from `match` rightwards is M3 onwards.
 
 ---
 
@@ -88,6 +90,82 @@ injection control, one mechanism.
 
 ---
 
+## How work survives a crash
+
+The queue is the part of this system most likely to be built badly, so it is
+worth being explicit about what it does.
+
+A worker claims a job by **updating** it, never by deleting it:
+
+```sql
+SELECT id FROM job
+ WHERE state = 'pending' AND run_after <= now()
+ ORDER BY run_after, id
+ LIMIT :n
+   FOR UPDATE SKIP LOCKED
+```
+
+then sets `state = 'claimed'`, `claimed_by`, `lease_expires_at = now() + 2min`
+and `attempts = attempts + 1`, all in one transaction.
+
+Two properties fall out of that shape:
+
+**The pool scales without coordinating.** `SKIP LOCKED` lets a worker step over
+a row another worker has locked instead of blocking behind it, so four workers
+draining one queue do not serialise on its head. `FOR UPDATE` alone passes every
+single-worker test and then, depending on isolation level, either serialises the
+pool or hands one row to two workers. In accounts payable that second failure
+mode means paying an invoice twice, so it is tested directly: four concurrent
+workers, forty jobs, each claimed exactly once.
+
+**A killed worker loses nothing.** The row is still in the table with its
+payload and attempt history; the only thing wrong with it is that it is
+`claimed` by a process that no longer exists. A reaper — running under advisory
+lock `0x74855170` so exactly one worker sweeps, whatever the pool size — returns
+any job whose lease has expired to `pending`. It does not increment `attempts`,
+because the claim already counted that try and the job did not fail; the
+infrastructure did.
+
+`scripts/demo_crash_recovery.sh` performs this with a real `SIGKILL` against the
+real container. Nothing in it is simulated, because a graceful shutdown would
+prove nothing about crash recovery.
+
+**The pool outlives the database.** A claim that raises has claimed nothing, so
+the loop logs it and backs off — from the poll interval to a thirty-second cap,
+reset by the first success — rather than exiting. This is not hypothetical
+robustness: running `make migrate-roundtrip` against a live stack dropped the
+`job` table underneath a polling worker and killed it permanently, which is the
+same code path as a Postgres restart or an RDS failover. `restart:
+unless-stopped` on the long-running services is the backstop for an actual
+crash; the one-shot migrate and seed jobs keep `restart: "no"`, because a job
+that reruns itself is not a job.
+
+**Failures are sorted before they are retried.** The handler raises
+`TransientJobError` for a provider blip or a connection reset — back to the queue
+with exponential backoff from five seconds, capped at ten minutes, three attempts
+including the first. It raises `PermanentJobError` for a corrupt document or a
+payload naming a row that no longer exists, which goes straight to the
+dead-letter table without burning the budget. Retrying everything is how a single
+poison message occupies a worker for an hour.
+
+Nothing is deleted at the end either. A dead letter keeps the original payload
+and the error, and `scripts/queuectl.py` replays it once the cause is fixed:
+
+```bash
+make dlq                 # what failed, and why
+make replay id=<uuid>    # or id=--all
+make queue-stats         # depth by state
+make reap                # return jobs whose worker died
+```
+
+No jitter on the backoff, deliberately. Jitter prevents a thundering herd when
+many clients retry against one dependency; here the jobs are already spread by
+their own arrival times and the pool is four processes. Adding it would be cargo
+cult, and it would make the retry schedule untestable without controlling a
+random source.
+
+---
+
 ## What is deliberately not distributed
 
 Knowing when not to is the part that is hard to demonstrate, so it is written
@@ -103,8 +181,20 @@ laptop application would be resume-driven architecture.
 distributed transaction. Postgres gives both in one commit via a transactional
 outbox and `SELECT … FOR UPDATE SKIP LOCKED`. The honest cost: it does not fan
 out, it does not replay a topic, and somewhere above a few hundred jobs per
-second the polling loop becomes the bottleneck. A `Queue` protocol with a
-Postgres implementation and an SQS implementation (M2) proves the boundary holds.
+second the polling loop becomes the bottleneck.
+
+A `Queue` protocol marks where that swap would happen. `PostgresJobQueue` is the
+only implementation — there is no SQS adapter in this repository and the
+milestone list does not promise one. What the protocol does buy today is honest
+and small: producers bind to `enqueue` and workers to the claim/settle cycle, so
+no request handler can reach the operational verbs, and `tests/unit/test_ports.py`
+type-checks the adapter against the port so a signature cannot drift silently.
+
+It also records the constraint rather than hiding it. Every method on the port
+takes the caller's `AsyncSession`, because the enqueue has to commit with the
+state change. Anything broker-backed can only satisfy that shape by giving up
+the single commit and accepting a real duplicate window — which is a trade to
+make deliberately, not to discover after the interface has made it look free.
 
 **No microservices.** Two deployable units: the Python plane and the Go payment
 executor. That split has a real reason — the money path wants transactional
@@ -226,12 +316,14 @@ src/threshold/
   config/         twelve-factor settings
 migrations/       Alembic, reversible, one transaction per upgrade
 infra/local/      Keycloak realm and other local-only fixtures
-scripts/          seed, smoke test
+  services/       use cases that compose adapters — ingestion today
+scripts/          seed, smoke test, queue CLI, crash-recovery demo
 tests/unit/       no stack required, runs on every commit
 tests/integration/ requires `make up`
 ```
 
-`domain/` depends on nothing. `adapters/` depends on `domain/`. `api/` and
-`workers/` depend on both. Dependencies point inwards, which is what makes the
+`domain/` depends on nothing. `adapters/` depends on `domain/`. `services/`,
+`api/` and `workers/` depend on both, and on the ports rather than the concrete
+adapters. Dependencies point inwards, which is what makes the
 rules engine testable without a database and the queue swappable without
 touching the classifier.

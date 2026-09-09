@@ -47,14 +47,21 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
 
 
 @asynccontextmanager
-async def session_scope() -> AsyncIterator[AsyncSession]:
+async def session_scope(
+    sessions: async_sessionmaker[AsyncSession] | None = None,
+) -> AsyncIterator[AsyncSession]:
     """One transaction per unit of work.
 
     Commits on success, rolls back on any exception. Audit events are written
     inside this scope by their callers so the trail commits with the change it
     describes, never after it.
+
+    ``sessions`` overrides the process-global engine. Production never passes it;
+    it exists so a worker can be run against a specific database without
+    mutating global state, which is what makes the outage test in
+    ``tests/integration/test_queue.py`` possible at all.
     """
-    async with get_sessionmaker()() as session:
+    async with (sessions or get_sessionmaker())() as session:
         try:
             yield session
             await session.commit()

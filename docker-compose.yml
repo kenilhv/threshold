@@ -155,6 +155,12 @@ services:
       - "8000:8000"
     command:
       ["uvicorn", "threshold.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # The long-running services restart; the one-shot jobs above deliberately do
+    # not. This is the backstop, not the mechanism: the worker already retries a
+    # failed claim in-process with backoff, because a pool that needs Docker to
+    # notice a ten-second Postgres blip has already dropped the work it held.
+    # What this covers is the case in-process handling cannot — a crash.
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status==200 else 1)"]
       interval: 5s
@@ -173,6 +179,7 @@ services:
       redis:
         condition: service_healthy
     command: ["python", "-m", "threshold.workers.main"]
+    restart: unless-stopped
 
 volumes:
   postgres-data:

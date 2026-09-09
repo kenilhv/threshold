@@ -29,6 +29,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import JSONB
@@ -456,4 +457,172 @@ class IdempotencyKey(Base):
         CheckConstraint("response_status between 100 and 599", name="ck_idempotency_status"),
         CheckConstraint("expires_at > created_at", name="ck_idempotency_expiry_after_creation"),
         Index("ix_idempotency_expires_at", "expires_at"),
+    )
+
+
+class Job(Base):
+    """A unit of durable work.
+
+    The queue is this table. Claiming uses ``SELECT ... FOR UPDATE SKIP LOCKED``
+    so N workers poll concurrently without blocking each other and without ever
+    handing the same row to two of them.
+
+    ``dedupe_key`` is the second of three idempotency layers. The first is the
+    HTTP ``Idempotency-Key``; this one stops at-least-once delivery from
+    enqueueing the same work twice; the third is a unique constraint on the
+    payment row in M8. Each catches something the others cannot.
+    """
+
+    __tablename__ = "job"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    kind: Mapped[str] = mapped_column(String(50), nullable=False, info=classify(Sensitivity.PUBLIC))
+    payload: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, info=classify(Sensitivity.INTERNAL)
+    )
+
+    #: Nullable: not every job needs deduplication, and a partial unique index
+    #: over the non-null values keeps the index small.
+    dedupe_key: Mapped[str | None] = mapped_column(
+        String(200), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+
+    state: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default="pending",
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", info=classify(Sensitivity.PUBLIC)
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="3", info=classify(Sensitivity.PUBLIC)
+    )
+
+    #: Backoff is expressed as a future run time rather than a sleep, so a
+    #: retry costs a worker nothing while it waits.
+    run_after: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    claimed_by: Mapped[str | None] = mapped_column(
+        String(120), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+    #: The heart of crash recovery. A worker that dies stops renewing this, and
+    #: the reaper returns the job to the queue once it passes.
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+
+    last_error: Mapped[str | None] = mapped_column(
+        Text, nullable=True, info=classify(Sensitivity.INTERNAL)
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state in ('pending', 'claimed', 'succeeded', 'failed', 'dead')",
+            name="ck_job_state",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_job_attempts_non_negative"),
+        CheckConstraint("max_attempts > 0", name="ck_job_max_attempts_positive"),
+        CheckConstraint(
+            "(state = 'claimed') = (lease_expires_at is not null)",
+            name="ck_job_claimed_iff_leased",
+        ),
+        # Partial by design — see migration 0003 for why each one is scoped.
+        Index(
+            "ix_job_claimable",
+            "run_after",
+            "created_at",
+            postgresql_where=text("state = 'pending'"),
+        ),
+        Index(
+            "ix_job_lease",
+            "lease_expires_at",
+            postgresql_where=text("state = 'claimed'"),
+        ),
+        Index(
+            "uq_job_dedupe_key",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text("dedupe_key IS NOT NULL AND state IN ('pending', 'claimed')"),
+        ),
+    )
+
+
+class DeadLetter(Base):
+    """A job that exhausted its attempts, kept with everything needed to replay.
+
+    Separate from ``job`` rather than a terminal state on it, for one reason:
+    the queue's hot path filters on ``state = 'pending'`` and a growing tail of
+    permanently failed rows makes that index progressively worse. Moving them
+    out keeps the working set proportional to live work.
+    """
+
+    __tablename__ = "dead_letter"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    original_job_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    kind: Mapped[str] = mapped_column(String(50), nullable=False, info=classify(Sensitivity.PUBLIC))
+    payload: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, info=classify(Sensitivity.INTERNAL)
+    )
+    dedupe_key: Mapped[str | None] = mapped_column(
+        String(200), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    final_error: Mapped[str] = mapped_column(
+        Text, nullable=False, info=classify(Sensitivity.INTERNAL)
+    )
+    #: Whether the failure was classified transient or permanent. A tail of
+    #: permanent failures is a bug in the pipeline; a tail of transient ones is
+    #: a dependency that needs attention. Different problems, different pages.
+    failure_kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    died_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    replayed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "failure_kind in ('transient', 'permanent')", name="ck_dead_letter_failure_kind"
+        ),
+        Index("ix_dead_letter_unreplayed", "died_at", postgresql_where=replayed_at.is_(None)),
     )

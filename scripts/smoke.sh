@@ -95,8 +95,10 @@ if [[ -s "$FIXTURE" ]]; then
   check "POST /v1/documents creates a document" "true" \
     "$(printf '%s' "$FIRST" | python -c 'import json,sys; print(str(json.load(sys.stdin)["created"]).lower())' 2>/dev/null)"
 
-  check "extraction is stored at version 1" "1" \
-    "$(printf '%s' "$FIRST" | python -c 'import json,sys; print(json.load(sys.stdin)["extraction_version"])' 2>/dev/null)"
+  # The POST must hand back a job id, not a finished extraction. If this ever
+  # reads false, the API went back to doing the work on the request thread.
+  check "work was queued rather than done inline" "true" \
+    "$(printf '%s' "$FIRST" | python -c 'import json,sys; print("true" if json.load(sys.stdin).get("job_id") else "false")' 2>/dev/null)"
 
   SECOND="$(curl -s --max-time 30 -X POST "$API/v1/documents" -F "file=@$FIXTURE;type=application/pdf")"
   check "identical bytes do not create a second document" "false" \
@@ -115,6 +117,29 @@ if [[ -s "$FIXTURE" ]]; then
        curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST "$API/v1/documents" \
          -H "Idempotency-Key: $KEY" -F "file=@$FIXTURE.other;type=application/pdf")"
   rm -f "$FIXTURE.other"
+
+  # Extraction is asynchronous now, so the smoke test has to wait for the
+  # worker rather than assume the response already carries a result.
+  EXTRACTED=""
+  for _ in $(seq 1 40); do
+    EXTRACTED="$(curl -s --max-time 15 "$API/v1/documents/$DOC_ID" \
+      | python -c 'import json,sys; print(json.load(sys.stdin).get("extraction_version") or "")' 2>/dev/null)"
+    [[ -n "$EXTRACTED" ]] && break
+    sleep 0.5
+  done
+  check "the worker extracts the document" "1" "$EXTRACTED"
+
+  # A claimed job whose lease has already expired is work nobody is doing and
+  # nobody has noticed. The reaper exists so this count stays zero.
+  check "no job is stuck holding a dead lease" "0" \
+    "$(docker compose exec -T postgres psql -U threshold -d threshold -tAc \
+       "select count(*) from job where state='claimed' and lease_expires_at < now()" | tr -d '\r' | head -1)"
+
+  check "this document's job reached a terminal state" "1" \
+    "$(docker compose exec -T postgres psql -U threshold -d threshold -tAc \
+       "select count(*) from job where payload->>'document_id' = '$DOC_ID' and state in ('succeeded','dead')" | tr -d '\r' | head -1)"
+
+
 else
   printf '  \033[33mSKIP\033[0m  ingest checks (could not build a fixture)\n'
 fi
