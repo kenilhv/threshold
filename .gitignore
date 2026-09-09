@@ -13,3 +13,6 @@ build/
 htmlcov/
 node_modules/
 .DS_Store
+
+# smoke-test scratch
+.smoke-invoice.pdf*

@@ -16,7 +16,7 @@ import structlog
 from fastapi import FastAPI, Request, Response
 
 from threshold.adapters.db import dispose_engine, init_engine
-from threshold.api.routes import health
+from threshold.api.routes import documents, health
 from threshold.config.settings import get_settings
 from threshold.observability.logging import configure_logging
 
@@ -77,6 +77,7 @@ def create_app() -> FastAPI:
         return response
 
     app.include_router(health.router)
+    app.include_router(documents.router)
     return app
 
 

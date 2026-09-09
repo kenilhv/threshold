@@ -65,6 +65,61 @@ check "pgvector extension present" "vector" \
 check "MinIO bucket exists" "200" \
   "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:9000/minio/health/live)"
 
+# ---------------------------------------------------------------- ingest ----
+# Generates a fixture invoice, submits it, then submits the identical bytes
+# again. The second submission must not create a second document.
+
+# errexit is disabled around fixture generation: it needs the dev extras
+# installed, which a reviewer running only `make up` will not have. A missing
+# fixture must skip these checks, never abort the whole smoke test.
+FIXTURE=".smoke-invoice.pdf"
+set +e
+python - "$FIXTURE" <<'PY' >/dev/null 2>&1
+import dataclasses, sys, uuid
+from pathlib import Path
+from tests.unit.test_fixture_layouts import build_spec, render
+
+# The invoice number is varied, not just the seed. Fixtures are deliberately
+# deterministic, so a fresh seed alone can still render byte-identical output —
+# in which case the system correctly deduplicates it and "created" is false.
+# That is right behaviour and a useless smoke check, so make the bytes genuinely
+# new by changing something that reaches the page.
+spec = build_spec()
+spec = dataclasses.replace(spec, invoice_number=f"SMOKE-{uuid.uuid4().hex[:10].upper()}")
+render("continental_tabular", spec, Path(sys.argv[1]))
+PY
+set -e
+
+if [[ -s "$FIXTURE" ]]; then
+  FIRST="$(curl -s --max-time 30 -X POST "$API/v1/documents" -F "file=@$FIXTURE;type=application/pdf")"
+  check "POST /v1/documents creates a document" "true" \
+    "$(printf '%s' "$FIRST" | python -c 'import json,sys; print(str(json.load(sys.stdin)["created"]).lower())' 2>/dev/null)"
+
+  check "extraction is stored at version 1" "1" \
+    "$(printf '%s' "$FIRST" | python -c 'import json,sys; print(json.load(sys.stdin)["extraction_version"])' 2>/dev/null)"
+
+  SECOND="$(curl -s --max-time 30 -X POST "$API/v1/documents" -F "file=@$FIXTURE;type=application/pdf")"
+  check "identical bytes do not create a second document" "false" \
+    "$(printf '%s' "$SECOND" | python -c 'import json,sys; print(str(json.load(sys.stdin)["created"]).lower())' 2>/dev/null)"
+
+  DOC_ID="$(printf '%s' "$FIRST" | python -c 'import json,sys; print(json.load(sys.stdin)["document_id"])' 2>/dev/null)"
+  check "GET /v1/documents/{id} returns the extraction" "200" \
+    "$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$API/v1/documents/$DOC_ID")"
+
+  # Reusing a key for different content must be refused, not silently replayed.
+  KEY="smoke-$(date +%s)-$$"
+  curl -s -o /dev/null --max-time 30 -X POST "$API/v1/documents" \
+    -H "Idempotency-Key: $KEY" -F "file=@$FIXTURE;type=application/pdf"
+  check "reusing an Idempotency-Key for other content is a 409" "409" \
+    "$(printf 'different bytes entirely' > "$FIXTURE.other"; \
+       curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST "$API/v1/documents" \
+         -H "Idempotency-Key: $KEY" -F "file=@$FIXTURE.other;type=application/pdf")"
+  rm -f "$FIXTURE.other"
+else
+  printf '  \033[33mSKIP\033[0m  ingest checks (could not build a fixture)\n'
+fi
+rm -f "$FIXTURE"
+
 echo
 if [[ $fail -eq 0 ]]; then
   printf '\033[32mAll checks passed.\033[0m\n\n'

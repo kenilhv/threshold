@@ -87,7 +87,12 @@ Full reasoning, including what is deliberately *not* distributed and why:
       by a database trigger, `NUMERIC` money, PII classification declared on
       every column, structured logging with redaction, OIDC realm as committed
       configuration, liveness separated from readiness.
-- [ ] M1 — ingestion and schema-constrained extraction with per-field confidence
+- [x] **M1 — ingestion and extraction.** `POST /v1/documents` accepts a PDF,
+      content-addresses it, stores it in S3-compatible storage and persists an
+      immutable versioned extraction with per-field confidence. Idempotent at
+      two independent layers. A deterministic extraction tier runs with no model
+      weights, no API key and no network, so CI exercises the real pipeline. Four
+      byte-deterministic fixture layouts carry the shapes that break extractors.
 - [ ] M2 — durable job execution: Postgres queue, leases, backoff, dead-letter, replay
 - [ ] M3 — three-way match, the frozen exception taxonomy, owner routing
 - [ ] M4 — the operator console
