@@ -16,6 +16,7 @@ dependencies = [
     "boto3>=1.35",
     "structlog>=24.4",
     "python-multipart>=0.0.20",
+    "pypdf>=5.1",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +27,12 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "types-boto3>=1.35",
+]
+
+# Fixture generation only. Deliberately not a runtime dependency: the service
+# reads documents, it never writes them, and the golden set is built offline.
+fixtures = [
+    "reportlab>=4.2",
 ]
 
 [build-system]

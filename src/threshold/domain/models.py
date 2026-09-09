@@ -18,10 +18,12 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -252,3 +254,206 @@ class MoneyExample(Base):
     )
 
     __table_args__ = (CheckConstraint("length(currency) = 3", name="ck_money_example_currency"),)
+
+
+class Document(Base):
+    """A file that arrived, stored once.
+
+    ``content_sha256`` is unique. Two submissions of the same bytes are the same
+    document no matter what they were called or who sent them, which is the
+    cheapest of the three deduplication layers and the one that catches the most
+    common real case: an accounts-payable inbox receiving the same PDF twice
+    because a supplier resent it.
+
+    The bytes live in object storage; this row holds only the pointer and the
+    facts needed to find, verify and audit them.
+    """
+
+    __tablename__ = "document"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    content_sha256: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, info=classify(Sensitivity.PUBLIC)
+    )
+
+    #: Key in the object store. Derived from the hash, so the location is a pure
+    #: function of the content and a re-upload cannot fork into two objects.
+    storage_key: Mapped[str] = mapped_column(
+        String(500), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    #: As supplied. INTERNAL because filenames routinely leak vendor names,
+    #: amounts and project codes.
+    original_filename: Mapped[str] = mapped_column(
+        String(400), nullable=False, info=classify(Sensitivity.INTERNAL)
+    )
+    content_type: Mapped[str] = mapped_column(
+        String(120), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    byte_size: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    page_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="upload", info=classify(Sensitivity.PUBLIC)
+    )
+
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    extractions: Mapped[list[Extraction]] = relationship(
+        back_populates="document", cascade="all, delete-orphan", order_by="Extraction.version"
+    )
+
+    __table_args__ = (
+        CheckConstraint("byte_size > 0", name="ck_document_byte_size_positive"),
+        CheckConstraint("length(content_sha256) = 64", name="ck_document_sha256_length"),
+        CheckConstraint(
+            "source in ('upload', 'email', 'api', 'fixture')", name="ck_document_source"
+        ),
+        CheckConstraint(
+            "page_count is null or page_count > 0", name="ck_document_page_count_positive"
+        ),
+    )
+
+
+class Extraction(Base):
+    """One reading of one document. Immutable, versioned, never updated.
+
+    Re-extracting inserts version N+1 rather than mutating N. That is what makes
+    the evaluation harness possible — any historical document can be replayed
+    against a new model or prompt and the two rows diffed — and it is what turns
+    "the model changed and the numbers moved" from a mystery into a query.
+
+    ``fields`` holds the full ``ExtractedInvoice`` as JSONB: every value with its
+    own confidence, bounding box and the raw text it was parsed from.
+    """
+
+    __tablename__ = "extraction"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("document.id", ondelete="CASCADE"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, info=classify(Sensitivity.PUBLIC))
+
+    extractor_kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    extractor_id: Mapped[str] = mapped_column(
+        String(200), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    prompt_version: Mapped[str | None] = mapped_column(
+        String(60), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+
+    fields: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, info=classify(Sensitivity.INTERNAL)
+    )
+
+    #: The minimum confidence across decision-relevant fields, denormalised so
+    #: the review queue can filter on it without unpacking JSONB per row. A
+    #: minimum, never a mean — see domain/extraction.py for why.
+    lowest_decision_confidence: Mapped[Decimal] = mapped_column(
+        Numeric(5, 4), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    duration_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    input_tokens: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+    output_tokens: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    document: Mapped[Document] = relationship(back_populates="extractions")
+
+    __table_args__ = (
+        # This unique constraint's index also serves lookups by (document_id)
+        # and (document_id, version); a separate btree would be dead weight.
+        UniqueConstraint("document_id", "version", name="uq_extraction_document_version"),
+        CheckConstraint("version > 0", name="ck_extraction_version_positive"),
+        CheckConstraint(
+            "extractor_kind in ('deterministic', 'vision_model')",
+            name="ck_extraction_extractor_kind",
+        ),
+        CheckConstraint(
+            "lowest_decision_confidence >= 0 and lowest_decision_confidence <= 1",
+            name="ck_extraction_confidence_is_a_probability",
+        ),
+        Index("ix_extraction_confidence", "lowest_decision_confidence"),
+    )
+
+
+class IdempotencyKey(Base):
+    """Stored responses for replayed requests, following Stripe's published spec.
+
+    Three behaviours, and the third is the one people miss:
+
+    * Same key, same request  -> replay the stored response, do no work.
+    * New key                 -> do the work, store the response.
+    * Same key, DIFFERENT request -> 409. Reusing a key for different content is
+      a client bug, and silently treating it as a replay would return the wrong
+      resource with a 200 attached. Failing loudly is the safer error.
+
+    The request fingerprint is what makes the third case detectable, which is why
+    it is stored rather than just the key.
+    """
+
+    __tablename__ = "idempotency_key"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    key: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, info=classify(Sensitivity.PUBLIC)
+    )
+    #: sha256 over method, path and body. Comparable without retaining the body.
+    request_fingerprint: Mapped[str] = mapped_column(
+        String(64), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    response_status: Mapped[int] = mapped_column(
+        Integer, nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    response_body: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, info=classify(Sensitivity.INTERNAL)
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    #: Stripe expires keys after 24 hours. Bounded retention keeps the table from
+    #: growing without limit and matches what clients are told to expect.
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    __table_args__ = (
+        CheckConstraint("response_status between 100 and 599", name="ck_idempotency_status"),
+        CheckConstraint("expires_at > created_at", name="ck_idempotency_expiry_after_creation"),
+        Index("ix_idempotency_expires_at", "expires_at"),
+    )
