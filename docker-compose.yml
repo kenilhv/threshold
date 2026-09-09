@@ -1,0 +1,179 @@
+# One command brings the whole system up:  make up   (or: docker compose up -d)
+#
+# Every dependency here has a healthcheck and every consumer waits on it with
+# `condition: service_healthy`. Without that, `docker compose up` races: the API
+# starts before Postgres accepts connections, crashes, restarts, and the first
+# experience a stranger has of this project is a crash loop.
+#
+# Cloud mapping — the only things that change are the endpoint and the
+# credential source, which is why boto3 is used locally rather than a MinIO SDK:
+#   postgres  -> RDS Postgres          minio    -> S3
+#   redis     -> ElastiCache           keycloak -> Cognito / an existing IdP
+#   api,worker-> ECS Fargate tasks
+
+name: threshold
+
+x-app-env: &app-env
+  THRESHOLD_ENVIRONMENT: local
+  THRESHOLD_LOG_LEVEL: INFO
+  THRESHOLD_DATABASE_URL: postgresql+asyncpg://threshold:threshold@postgres:5432/threshold
+  THRESHOLD_REDIS_URL: redis://redis:6379/0
+  THRESHOLD_S3_ENDPOINT_URL: http://minio:9000
+  THRESHOLD_S3_ACCESS_KEY_ID: minioadmin
+  THRESHOLD_S3_SECRET_ACCESS_KEY: minioadmin
+  THRESHOLD_S3_BUCKET_DOCUMENTS: threshold-documents
+  THRESHOLD_OIDC_ISSUER: http://keycloak:8080/realms/threshold
+
+services:
+  postgres:
+    # pgvector ships in the same image as Postgres 16. One datastore of record,
+    # including vectors: same transaction, same backup, same restore drill.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: threshold
+      POSTGRES_PASSWORD: threshold
+      POSTGRES_DB: threshold
+      # Deterministic collation so ORDER BY is identical on every machine.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U threshold -d threshold"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    # Redis holds only replayable state — idempotency-key cache, locks, rate
+    # limits. Nothing here is durable, so it is started with persistence off on
+    # purpose: an accidental restore of stale locks is worse than a cold cache.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio-init:
+    # Creates the bucket and exits. Idempotent, so `up` twice is safe.
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/threshold-documents &&
+      mc version enable local/threshold-documents &&
+      echo 'bucket ready (versioning on)'
+      "
+    restart: "no"
+
+  keycloak:
+    # Real OIDC rather than hand-rolled JWT. The realm is committed as JSON so
+    # roles are reproducible instead of clicked into existence.
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./infra/local/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      # Keycloak 26 serves health on the management port 9000, not 8080.
+      test:
+        ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '\"status\": \"UP\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  migrate:
+    # Runs to completion before api and worker start. Migrations are a separate
+    # unit of work, never an app-startup side effect: two API replicas racing to
+    # migrate the same database is a real outage and an easy one to avoid.
+    build:
+      context: .
+      target: runtime
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  seed:
+    build:
+      context: .
+      target: runtime
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "scripts.seed"]
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      target: runtime
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    command:
+      ["uvicorn", "threshold.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status==200 else 1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  worker:
+    build:
+      context: .
+      target: runtime
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    command: ["python", "-m", "threshold.workers.main"]
+
+volumes:
+  postgres-data:
+  minio-data:

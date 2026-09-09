@@ -1,0 +1,91 @@
+{
+  "realm": "threshold",
+  "enabled": true,
+  "displayName": "Threshold",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "accessTokenLifespan": 900,
+
+  "roles": {
+    "realm": [
+      {
+        "name": "ap_clerk",
+        "description": "Processes invoices. May review and resolve routine exceptions; may not approve above the delegation limit."
+      },
+      {
+        "name": "buyer",
+        "description": "Owns purchasing decisions. Receives price and quantity variances against the purchase order they raised."
+      },
+      {
+        "name": "controller",
+        "description": "Owns financial control. Sole approver of vendor banking changes and anything above the delegation limit."
+      },
+      {
+        "name": "auditor",
+        "description": "Read-only across every projection including the audit trail. Cannot approve, reject or mutate anything."
+      }
+    ]
+  },
+
+  "clients": [
+    {
+      "clientId": "threshold-api",
+      "name": "Threshold API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": true,
+      "standardFlowEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "threshold-console",
+      "name": "Threshold Operator Console",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/*"
+      },
+      "redirectUris": ["http://localhost:3000/*"],
+      "webOrigins": ["http://localhost:3000"]
+    }
+  ],
+
+  "users": [
+    {
+      "username": "clerk",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Ada",
+      "lastName": "Clerk",
+      "email": "clerk@threshold.local",
+      "credentials": [{ "type": "password", "value": "clerk", "temporary": false }],
+      "realmRoles": ["ap_clerk"]
+    },
+    {
+      "username": "controller",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Grace",
+      "lastName": "Controller",
+      "email": "controller@threshold.local",
+      "credentials": [{ "type": "password", "value": "controller", "temporary": false }],
+      "realmRoles": ["controller"]
+    },
+    {
+      "username": "auditor",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Edsger",
+      "lastName": "Auditor",
+      "email": "auditor@threshold.local",
+      "credentials": [{ "type": "password", "value": "auditor", "temporary": false }],
+      "realmRoles": ["auditor"]
+    }
+  ]
+}

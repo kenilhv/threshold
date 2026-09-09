@@ -1,0 +1,85 @@
+[project]
+name = "threshold"
+version = "0.1.0"
+description = "An accounts-payable control plane that holds the line between what a machine may execute alone and what a human must decide."
+requires-python = ">=3.12"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "redis>=5.2",
+    "boto3>=1.35",
+    "structlog>=24.4",
+    "python-multipart>=0.0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-boto3>=1.35",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ---------------------------------------------------------------------------
+# Strict by default. The point of this project is that its guarantees are
+# checkable, and an untyped boundary is a guarantee nobody can check.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+disallow_any_explicit = false          # SQLAlchemy and boto3 stubs need some
+plugins = []
+mypy_path = "src"
+packages = ["threshold"]
+
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",     # pycodestyle, pyflakes
+    "I",               # import sorting
+    "N",               # naming
+    "UP",              # pyupgrade
+    "B",               # bugbear
+    "A",               # shadowing builtins
+    "C4",              # comprehensions
+    "DTZ",             # naive datetimes — money systems must not have them
+    "T20",             # no print()
+    "SIM",             # simplify
+    "RUF",
+]
+ignore = ["B008"]      # FastAPI's Depends() in defaults is the documented idiom
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+"migrations/*" = ["N999", "E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: requires the docker compose stack to be running",
+]
