@@ -31,6 +31,7 @@ from threshold.adapters.db import get_session
 from threshold.adapters.extraction.port import ExtractionError
 from threshold.api import idempotency
 from threshold.api.dependencies import get_ingest_service
+from threshold.domain.extraction import redacted_fields
 from threshold.domain.models import Document, Extraction, MatchException, MatchResult
 from threshold.services.ingest import (
     DocumentTooLargeError,
@@ -243,7 +244,9 @@ async def get_document(
         lowest_decision_confidence=(
             str(extraction.lowest_decision_confidence) if extraction else None
         ),
-        fields=extraction.fields if extraction else None,
+        # Payment details are dropped, not masked. Four digits is a short
+        # enough candidate list that masking them protects nothing.
+        fields=redacted_fields(extraction.fields) if extraction else None,
     )
 
 

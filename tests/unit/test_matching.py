@@ -18,6 +18,7 @@ from decimal import Decimal
 import pytest
 
 from threshold.domain.matching import (
+    BankComparison,
     Disposition,
     InvoiceFacts,
     InvoiceLineFacts,
@@ -25,7 +26,7 @@ from threshold.domain.matching import (
     PurchaseOrderLineFacts,
     three_way_match,
 )
-from threshold.domain.taxonomy import ExceptionCode, Severity, spec_for
+from threshold.domain.taxonomy import ExceptionCode, OwnerRole, Severity, spec_for
 
 VENDOR = uuid.UUID("11111111-1111-4111-8111-111111111111")
 OTHER_VENDOR = uuid.UUID("22222222-2222-4222-8222-222222222222")
@@ -65,7 +66,7 @@ def invoice(
     vendor_status: str | None = "active",
     po_number: str | None = "PO-1001",
     duplicate_of: uuid.UUID | None = None,
-    bank_changed: bool = False,
+    bank: BankComparison = BankComparison.MATCHED,
 ) -> InvoiceFacts:
     return InvoiceFacts(
         invoice_number="INV-7",
@@ -79,7 +80,7 @@ def invoice(
         vendor_status=vendor_status,
         po_number=po_number,
         duplicate_of_document_id=duplicate_of,
-        bank_details_changed=bank_changed,
+        bank_comparison=bank,
     )
 
 
@@ -300,7 +301,7 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="the payment details changed",
-        invoice=invoice(bank_changed=True),
+        invoice=invoice(bank=BankComparison.CHANGED),
         po=order(),
         codes={ExceptionCode.BANK_DETAILS_CHANGED},
         disposition=Disposition.BLOCKED,
@@ -316,6 +317,15 @@ CASES: tuple[Case, ...] = (
         ),
         po=order(currency="USD"),
         codes={ExceptionCode.CURRENCY_MISMATCH},
+        disposition=Disposition.BLOCKED,
+    ),
+    Case(
+        # Same code, different first phone call: an account the vendor once
+        # used is a stale or replayed document, not a redirect attempt.
+        name="the payment details are an account the vendor has replaced",
+        invoice=invoice(bank=BankComparison.CHANGED_TO_RETIRED),
+        po=order(),
+        codes={ExceptionCode.BANK_DETAILS_CHANGED},
         disposition=Disposition.BLOCKED,
     ),
     # --- the document against itself --------------------------------------
@@ -422,7 +432,7 @@ def test_a_currency_mismatch_refuses_to_compare_prices() -> None:
 
 def test_the_disposition_is_the_worst_severity_present() -> None:
     outcome = three_way_match(
-        invoice(confidence="0.10", bank_changed=True),
+        invoice(confidence="0.10", bank=BankComparison.CHANGED),
         order(),
     )
     severities = {e.severity for e in outcome.exceptions}
@@ -457,3 +467,96 @@ def test_an_invoice_with_no_line_items_records_that_nothing_was_compared() -> No
     assert not outcome.exceptions
     assert outcome.skipped_checks
     assert "no line items" in outcome.skipped_checks[0]
+
+
+class TestPaymentDetailComparison:
+    """Every state the comparison can land in is either an exception or a skip.
+
+    Silence is the one outcome that must never happen: a payment-detail check
+    that did not run has to be visible as not having run, or a reviewer reads a
+    clean result as evidence the account was verified.
+    """
+
+    def test_a_matched_account_raises_nothing_and_skips_nothing(self) -> None:
+        outcome = three_way_match(invoice(bank=BankComparison.MATCHED), order())
+        assert not outcome.exceptions
+        assert not outcome.skipped_checks
+
+    @pytest.mark.parametrize(
+        "state",
+        [BankComparison.CHANGED, BankComparison.CHANGED_TO_RETIRED],
+    )
+    def test_a_changed_account_blocks_and_goes_to_treasury(self, state: BankComparison) -> None:
+        outcome = three_way_match(invoice(bank=state), order())
+        raised = [e for e in outcome.exceptions if e.code is ExceptionCode.BANK_DETAILS_CHANGED]
+        assert len(raised) == 1
+        assert raised[0].owner is OwnerRole.TREASURY
+        assert raised[0].severity is Severity.BLOCK
+        assert outcome.disposition is Disposition.BLOCKED
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            BankComparison.NOT_EXTRACTED,
+            BankComparison.NOT_READ,
+            BankComparison.NO_VENDOR,
+            BankComparison.NO_HISTORY,
+        ],
+    )
+    def test_a_comparison_that_could_not_run_is_recorded(self, state: BankComparison) -> None:
+        outcome = three_way_match(invoice(bank=state), order())
+        assert not [
+            e for e in outcome.exceptions if e.code is ExceptionCode.BANK_DETAILS_CHANGED
+        ], "an unmade comparison must not accuse anyone"
+        assert any(s.startswith("payment-detail comparison:") for s in outcome.skipped_checks), (
+            f"{state} produced neither an exception nor a recorded skip"
+        )
+
+    def test_every_state_is_accounted_for(self) -> None:
+        """Exactly one of three outcomes, for every state, forever.
+
+        MATCHED is the only state allowed to be silent, because it is the only
+        one where the comparison ran and agreed. Every other state either
+        accuses or admits. A state added later without a branch surfaces here
+        as silence rather than as a control that quietly stopped running.
+        """
+        for state in BankComparison:
+            outcome = three_way_match(invoice(bank=state), order())
+            if state is BankComparison.MATCHED:
+                assert not outcome.exceptions and not outcome.skipped_checks
+                continue
+            raised = any(e.code is ExceptionCode.BANK_DETAILS_CHANGED for e in outcome.exceptions)
+            skipped = any(
+                s.startswith("payment-detail comparison:") for s in outcome.skipped_checks
+            )
+            assert raised != skipped, f"{state} produced neither an exception nor a skip"
+
+    def test_the_detail_never_carries_the_digits(self) -> None:
+        """The message is persisted and shown to reviewers; the digits are RESTRICTED."""
+        for state in (BankComparison.CHANGED, BankComparison.CHANGED_TO_RETIRED):
+            outcome = three_way_match(invoice(bank=state), order())
+            for exc in outcome.exceptions:
+                assert not any(ch.isdigit() for ch in exc.detail), exc.detail
+
+    def test_an_unresolved_vendor_still_records_the_bank_skip(self) -> None:
+        """skipped_checks has to stand alone.
+
+        VENDOR_UNKNOWN explains it to someone reading the exceptions. Someone
+        reading the skip list should not have to cross-reference to find out
+        why the payment details were never compared.
+        """
+        outcome = three_way_match(
+            invoice(vendor_id=None, vendor_status=None, bank=BankComparison.NO_VENDOR), order()
+        )
+        assert any("did not resolve" in s for s in outcome.skipped_checks)
+
+    def test_the_comparison_runs_even_with_no_purchase_order(self) -> None:
+        """The early return for a missing order must not skip a fraud control.
+
+        An invoice citing no purchase order is among the likeliest shapes for a
+        redirected payment to arrive in.
+        """
+        outcome = three_way_match(invoice(po_number=None, bank=BankComparison.CHANGED), None)
+        codes = {e.code for e in outcome.exceptions}
+        assert ExceptionCode.BANK_DETAILS_CHANGED in codes
+        assert ExceptionCode.NO_PO_REFERENCE in codes

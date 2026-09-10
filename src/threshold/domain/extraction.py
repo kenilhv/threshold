@@ -18,9 +18,10 @@ the numbers moved" is a mystery rather than a diff.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -141,6 +142,25 @@ class ExtractedInvoice(BaseModel):
     tax_amount: ExtractedField[Decimal]
     total: ExtractedField[Decimal]
 
+    #: The masked payment details printed on the page: the last four digits of
+    #: the account or IBAN, and of the routing code, sort code or BLZ.
+    #:
+    #: ``| None = None`` rather than a default ``ExtractedField`` instance, and
+    #: the distinction carries weight on this field. ``Extraction.fields`` is a
+    #: JSONB blob written once, so rows persisted before this existed have no
+    #: such key. A default instance would make "this reading predates payment-
+    #: detail extraction" byte-identical to "the extractor looked and found
+    #: nothing" -- two different facts with two different remediations, one of
+    #: which is re-extraction. On a fraud control, never-asked must not read as
+    #: asked-and-clear.
+    #:
+    #: Deliberately absent from ``decision_relevant_fields``: that gate is a
+    #: strict minimum, an unreadable bank line scores 0.0, and every invoice
+    #: without a printed payment block would trip LOW_CONFIDENCE_FIELD. The
+    #: bank signal has its own first-class path through the exception layer.
+    bank_account_last4: ExtractedField[str] | None = None
+    bank_routing_last4: ExtractedField[str] | None = None
+
     line_items: tuple[ExtractedLineItem, ...] = ()
 
     def decision_relevant_fields(self) -> dict[str, ExtractedField[object]]:
@@ -186,3 +206,25 @@ class ExtractionResult(BaseModel):
     #: estimated.
     input_tokens: int | None = None
     output_tokens: int | None = None
+
+
+#: Keys inside ``Extraction.fields`` that must never leave the internal
+#: projection. The blob is one JSONB column, so it cannot carry a per-field
+#: sensitivity the way a table column does -- this is the equivalent, declared
+#: in one place and consumed by anything that renders the blob outward.
+#:
+#: The whole column is not marked RESTRICTED instead, because
+#: ``classification.py``'s rule for that level is *dropped, not masked*: doing so
+#: would delete the entire extraction from the review projection in order to
+#: protect two keys, and a reviewer cannot judge an invoice they cannot see.
+RESTRICTED_FIELD_KEYS: Final = frozenset({"bank_account_last4", "bank_routing_last4"})
+
+
+def redacted_fields(fields: Mapping[str, object]) -> dict[str, object]:
+    """The extraction blob with payment details removed.
+
+    Dropped rather than masked, for the reason ``classification.py`` gives: a
+    masked bank identifier is still a bank identifier to anyone holding a
+    candidate list, and four digits is a short list.
+    """
+    return {key: value for key, value in fields.items() if key not in RESTRICTED_FIELD_KEYS}

@@ -35,6 +35,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
+from typing import assert_never
 
 from threshold.domain.taxonomy import ExceptionCode, OwnerRole, Severity, spec_for
 from threshold.domain.tolerance import (
@@ -55,6 +56,68 @@ def normalise(text: str) -> str:
     beyond this raises the pairing rate by pairing things that are not the same.
     """
     return _WHITESPACE.sub(" ", text).strip().casefold()
+
+
+class BankComparison(StrEnum):
+    """The result of comparing an invoice's payment details to the vendor's.
+
+    An enum rather than a boolean, and required rather than defaulted, because
+    the states that are neither "matched" nor "changed" are the ones that
+    matter. A ``bool`` forces every one of them to collapse into ``False``,
+    which reads as *checked and fine* -- and a control that reads as having run
+    when it did not is the exact shape D-013 was written against.
+    """
+
+    MATCHED = "matched"
+    #: Differs from the currently effective row, and matches nothing we hold.
+    CHANGED = "changed"
+    #: Matches an account this vendor has since replaced. A stale or replayed
+    #: document rather than a redirect attempt -- same desk, same clock, but a
+    #: different first phone call.
+    CHANGED_TO_RETIRED = "changed_to_retired"
+    #: The reading predates payment-detail extraction. Re-extract.
+    NOT_EXTRACTED = "not_extracted"
+    #: The page was read and no payment details came back confidently enough.
+    NOT_READ = "not_read"
+    #: No vendor resolved, so there is no history to compare against.
+    NO_VENDOR = "no_vendor"
+    #: The vendor has no payment details on file. Every genuine first invoice
+    #: from a supplier looks like this.
+    NO_HISTORY = "no_history"
+
+
+def _bank_skip_reason(comparison: BankComparison) -> str | None:
+    """Prose for a comparison that could not be made, or None if it was.
+
+    ``assert_never`` rather than a fallback: adding a state without deciding
+    what a reviewer should be told about it fails the type check instead of
+    silently producing a check that quietly does not appear in
+    ``skipped_checks`` at all.
+    """
+    match comparison:
+        case BankComparison.MATCHED | BankComparison.CHANGED | BankComparison.CHANGED_TO_RETIRED:
+            return None
+        case BankComparison.NOT_EXTRACTED:
+            return (
+                "this reading predates payment-detail extraction, so the page was never "
+                "asked for the account it pays into"
+            )
+        case BankComparison.NOT_READ:
+            return (
+                "no account and routing digits could be read from the page with enough "
+                "confidence to accuse this vendor of changing them"
+            )
+        case BankComparison.NO_VENDOR:
+            return (
+                "the billing party did not resolve, so there is no payment history to "
+                "compare against"
+            )
+        case BankComparison.NO_HISTORY:
+            return (
+                "this vendor has no payment details on file, so there is nothing this "
+                "invoice could have changed from"
+            )
+    assert_never(comparison)
 
 
 class Disposition(StrEnum):
@@ -89,6 +152,8 @@ class InvoiceFacts:
     total: Decimal
     lines: tuple[InvoiceLineFacts, ...]
     lowest_field_confidence: Decimal
+    #: Required, deliberately. See BankComparison.
+    bank_comparison: BankComparison
     vendor_id: uuid.UUID | None = None
     #: As recorded on the vendor, not as claimed by the invoice. ``None`` when
     #: the vendor did not resolve, in which case VENDOR_UNKNOWN already fired.
@@ -96,8 +161,6 @@ class InvoiceFacts:
     po_number: str | None = None
     #: Set when this vendor has already billed under this invoice number.
     duplicate_of_document_id: uuid.UUID | None = None
-    #: Set when the payment details differ from those last used for this vendor.
-    bank_details_changed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,13 +440,32 @@ def three_way_match(
             )
         )
 
-    if invoice.bank_details_changed:
+    # Ahead of every early return below. An invoice citing no purchase order is
+    # among the likeliest shapes for a redirected payment to arrive in, and it
+    # must not escape this check by returning first.
+    #
+    # No digits in either message. The detail is persisted and shown to
+    # reviewers, while the same four digits on VendorBankAccount are RESTRICTED.
+    if invoice.bank_comparison is BankComparison.CHANGED:
         problems.append(
             _raise(
                 ExceptionCode.BANK_DETAILS_CHANGED,
                 "the payment details on this invoice differ from those last used for this vendor",
             )
         )
+    elif invoice.bank_comparison is BankComparison.CHANGED_TO_RETIRED:
+        problems.append(
+            _raise(
+                ExceptionCode.BANK_DETAILS_CHANGED,
+                "the payment details on this invoice are an account this vendor has since "
+                "replaced, not the account currently on file",
+            )
+        )
+    elif (bank_skip := _bank_skip_reason(invoice.bank_comparison)) is not None:
+        # Recorded even when VENDOR_UNKNOWN also fires: skipped_checks has to
+        # stand on its own, without a reader cross-referencing the exception
+        # list to learn why a check did not run.
+        skipped.append(f"payment-detail comparison: {bank_skip}")
 
     if invoice.vendor_id is None:
         problems.append(

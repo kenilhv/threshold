@@ -60,7 +60,7 @@ log = structlog.get_logger(__name__)
 
 #: Bumped whenever the rules below change in a way that could move a result.
 #: Stored on every extraction so a shift in the numbers is attributable.
-EXTRACTOR_VERSION = "deterministic/1.0.0"
+EXTRACTOR_VERSION = "deterministic/1.1.0"
 
 # --------------------------------------------------------------------- labels
 
@@ -119,6 +119,8 @@ class DeterministicExtractor:
             subtotal=subtotal,
             tax_amount=tax_amount,
             total=total,
+            bank_account_last4=_find_masked_last4(lines, _BANK_ACCOUNT_LABELS),
+            bank_routing_last4=_find_masked_last4(lines, _BANK_ROUTING_LABELS),
             line_items=_find_line_items(lines),
         )
 
@@ -338,6 +340,100 @@ def _find_line_items(lines: list[str]) -> tuple[ExtractedLineItem, ...]:
     return tuple(items)
 
 
+# ------------------------------------------------------- payment details ---
+#
+# The last four digits of the account and of the routing code, which is all any
+# of these layouts prints. Everything ahead of them is masked on the page, so
+# there is no fuller value to read.
+#
+# `blz` and `bankcode` are both mandatory. The continental layout picks its
+# routing label from the vendor's tax-id country -- BLZ for German invoices,
+# Bankcode for Dutch ones -- so a BLZ-only pattern passes the German fixture and
+# silently reads nothing from every Netherlands vendor. That is the failure this
+# whole feature exists to prevent, one level down.
+#
+# There is no bare `account` alternative on purpose: it would match
+# "Account Manager: ext 4417" and hand four digits of a phone extension to the
+# highest-severity code in the system.
+_BANK_ACCOUNT_LABELS = r"(?:iban|account\s*(?:number|no\.?|ending)|kontonummer|rekeningnummer)"
+_BANK_ROUTING_LABELS = (
+    r"(?:routing\s*/\s*(?:sort\s*code|aba)|routing\s*(?:number|no\.?|ending)?"
+    r"|sort\s*code|bankleitzahl|bankcode|blz|aba)"
+)
+
+#: Longest alternative first: Python's alternation is leftmost-first, so
+#: `routing/aba` has to be tried before `routing` or the split below leaves a
+#: stray `/ABA` sitting in the value span.
+_BANK_ANY_LABEL = re.compile(f"(?:{_BANK_ROUTING_LABELS}|{_BANK_ACCOUNT_LABELS})", re.IGNORECASE)
+
+
+def _masked_span(text: str) -> str | None:
+    """The four digits at the end of a masked value, or None.
+
+    Two rules, both doing more work than they look like.
+
+    *Reject anything containing a lowercase letter.* Every real value span is
+    mask characters, uppercase and digits -- `DEXX XXXX XXXX XXXX XX82 91`,
+    `XXXX 0248`, `....8291`, and four U+007F characters followed by `8291`.
+    Prose is not. Enumerating mask codepoints instead would have missed that
+    last one: the layout renders its bullets as U+007F, so a literal `[Xx•.]`
+    class matches none of those fixtures while looking obviously correct.
+
+    *Strip every separator, then require exactly four digits.* The continental
+    layout groups a padded IBAN in fours, so where the last four digits break
+    depends on the national IBAN length -- `XX82 91` for a 22-character German
+    one, `X829 1` for a Swiss. Any offset-based rule is wrong for some country.
+    Requiring exactly four also refuses a date (six or eight digits) and an
+    amount, and refuses a span that greedily swallowed both values.
+    """
+    if any(char.islower() for char in text):
+        return None
+    digits = "".join(char for char in text if char.isdigit())
+    return digits if len(digits) == 4 else None
+
+
+def _find_masked_last4(lines: list[str], label_pattern: str) -> ExtractedField[str]:
+    """Read one masked payment identifier.
+
+    Deliberately not `_find_labelled_token`. That helper takes the first token
+    after the label, which on these four layouts returns `DEXX`, `XXXX`, `ABA`
+    and `ending` -- four confidently wrong readings out of eight, feeding the
+    shortest clock in the system.
+    """
+    label_re = re.compile(label_pattern + r"(?![\w-])\s*[:#]?\s*", re.IGNORECASE)
+    candidates: list[tuple[str, float, str]] = []
+
+    for index, line in enumerate(lines):
+        match = label_re.search(line)
+        if match is None:
+            continue
+
+        # Two layouts print both identifiers on one line, so a span has to stop
+        # at the next payment label or the routing digits bleed into the
+        # account's value and each reads the other's.
+        def span(text: str) -> str:
+            following = _BANK_ANY_LABEL.search(text)
+            return text[: following.start()] if following else text
+
+        same_line = _masked_span(span(line[match.end() :]))
+        if same_line is not None:
+            candidates.append((same_line, 0.88, line[match.end() :].strip()))
+            continue
+
+        # Exactly the next line, never a forward scan. The continental bank box
+        # flattens to `IBAN:`, value, `Waehrung:`, `EUR`, `BLZ:`, value -- a
+        # scan looking for the next line with digits would read the currency.
+        if index + 1 < len(lines):
+            next_line = _masked_span(span(lines[index + 1]))
+            if next_line is not None:
+                candidates.append((next_line, 0.58, lines[index + 1].strip()))
+
+    # The parsed digits are what compete, not the raw span: the same account
+    # printed twice under different masks is one reading, and two genuinely
+    # different last-four values is the ambiguity worth discounting.
+    return _resolve_candidates(candidates)
+
+
 def _find_labelled_amount(
     lines: list[str], label_pattern: str, currency: str | None
 ) -> ExtractedField[Decimal]:
@@ -547,6 +643,12 @@ def _empty_result(started: float, *, reason: str) -> ExtractionResult:
             invoice_number=nothing_str,
             vendor_name=nothing_str,
             vendor_tax_id=nothing_str,
+            # Explicit, not left to the default. A document with no text
+            # layer WAS asked for its payment details by this version and
+            # yielded none; that is a different fact from a reading written
+            # before the extractor knew to ask.
+            bank_account_last4=nothing_str,
+            bank_routing_last4=nothing_str,
             po_number=nothing_str,
             issue_date=nothing_str,
             due_date=nothing_str,

@@ -5,6 +5,136 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-016 — Payment-detail comparison, and the four ways it can decline to answer
+
+**Date:** 2026-09-10 · **Status:** accepted · **Closes D-013** · **Has a known, unpaid cost**
+
+`BANK_DETAILS_CHANGED` now fires. An invoice that is arithmetically perfect —
+right order, right price, goods received — is blocked to treasury on a four-hour
+clock when it asks to be paid into an account this vendor has never used.
+`make demo-match` shows it against a real PDF.
+
+**Tail-to-tail, not the fingerprint.** D-013's written plan named
+`VendorBankAccount.account_fingerprint`, and that plan was not executable: the
+fingerprint is an HMAC over the *full* routing and account numbers, while every
+one of these layouts prints four digits of nineteen by deliberate design. The
+comparison is therefore on `account_number_last4` and `routing_number_last4`.
+Recorded plainly because it is a weaker check than D-013 implied, and the
+honest name for it is tail-to-tail matching of whatever both sides happen to
+carry — the invoice may print an IBAN tail while the column holds a domestic
+account tail. For a German IBAN those coincide. In general they are not the same
+field, and that gap predates this work.
+
+**A state, not a boolean.** `InvoiceFacts.bank_comparison` is a required
+`BankComparison` with no default. The interesting states are the ones that are
+neither matched nor changed, and a `bool` collapses all of them into `False` —
+which reads as *checked and fine*. That is precisely the shape D-013 was written
+against, so replacing one defaulted flag with another would have reproduced the
+bug in a new place.
+
+**Both identifiers must read, or nothing is claimed.** A routing-only match is
+agreement about which *institution* is being paid while never having seen the
+destination account — the most dangerous available false negative. All four
+layouts print both, so the strict rule costs nothing on the real corpus.
+
+**A routing-only difference is a change.** The tempting softer rule — treat it
+as informational because bank mergers and correspondent routes exist — was
+rejected. It converts the flagship control into a fail-open path on an unmeasured
+guess about fraud shapes, which is exactly what D-014 forbids. And the tolerance
+philosophy does not transfer: "immaterial" there means eleven cents of
+reconcilable rounding, whereas there is no immaterial fraction of an account
+identifier.
+
+**Retired is distinguished from unknown.** An invoice quoting an account this
+vendor has *replaced* is a stale or replayed document; one quoting an account we
+have never held is a redirect attempt. Same code, same severity, same desk, same
+clock — a different first phone call. It costs one enum member and uses the
+effective-dating the seed already keeps for exactly this question.
+
+**Four ways to decline, all recorded.** `NOT_EXTRACTED` (the reading predates
+this feature — re-extract), `NOT_READ` (nothing legible enough to accuse anyone),
+`NO_VENDOR`, and `NO_HISTORY` each write a distinct sentence into
+`skipped_checks`. No new taxonomy code. `NO_HISTORY` is live on the seed today
+and is the shape of every genuine first invoice from a new supplier; firing the
+highest-severity code on that would be a false positive by construction.
+
+The schema field is `ExtractedField[str] | None = None` rather than a default
+not-found instance, and that distinction is the whole reason `NOT_EXTRACTED`
+exists. `Extraction.fields` is a JSONB blob written once, so rows persisted
+before this feature have no such key. A default instance would make "never
+asked" byte-identical to "asked and found nothing" — two different facts with
+two different remediations. `_empty_result` therefore passes the not-found
+instances *explicitly*: a document with no text layer genuinely was asked.
+
+**Not decision-relevant.** The fields are deliberately absent from
+`decision_relevant_fields()`. That gate is a strict minimum and an unreadable
+payment line scores 0.0, so every invoice without a printed bank block would
+trip `LOW_CONFIDENCE_FIELD`. The signal has its own first-class path through the
+exception layer, and `lowest_decision_confidence` is additionally a denormalised
+column written once at ingest — recomputing it under a new definition would
+leave historical rows disagreeing with current ones forever.
+
+**The read floor is a module constant, not a policy knob.** A tolerance answers
+"how much drift is acceptable"; this answers "did we read it at all", which is
+identity rather than degree. It is also a property of one parser's scoring tiers,
+so stamping it into the versioned `TolerancePolicy` would dress a second guess as
+calibration at the exact milestone D-014 says not to.
+
+**The unpaid cost, stated plainly.** An invoice whose payment block this parser
+cannot read auto-approves with a recorded skip. An escalation on unreadability
+was considered and rejected on a technical ground rather than a philosophical
+one: its trigger would be computed from the same label list whose failure
+produces it, so an unlisted label — `Beneficiary account`, `Empfängerkonto` —
+yields "no payment block present" and therefore silence. That is a correlated
+detector on the shortest clock in the system. The real fix is parser coverage,
+and eventually a full-detail comparison at payment-file generation where the
+complete account number exists.
+
+One consequence worth knowing: because the clean path now genuinely compares,
+`smoke.sh`'s "no check was skipped" and the integration suite's
+`skipped_checks == []` became stronger assertions. A parser regression on the
+continental layout presents as a smoke failure about skipped checks, which is one
+indirection away from obvious.
+
+Two things fixed in passing. The API was returning the whole extraction blob, so
+the payment digits would have been served to any caller; `redacted_fields` drops
+them — dropped, not masked, because four digits is a short candidate list. And
+`GET /v1/documents/{id}` is the first consumer of that projection.
+
+---
+
+## D-015b — The golden fixture had been quoting a bank account that never existed
+
+**Date:** 2026-09-10 · **Status:** accepted
+
+`build_spec()` printed account `8291` — Northgate's current account — paired with
+routing `0248`, the routing code Northgate *retired* forty days before
+`SEED_EPOCH`. Each value was individually plausible; the pair existed on no row
+in the database.
+
+It had been wrong since M1 and was invisible for exactly as long as nothing read
+it. The moment payment-detail comparison went live it turned the golden "clean"
+invoice into the highest-severity exception in the system and collapsed every
+demo scenario to blocked.
+
+The fixture was corrected rather than the seed. The seed's bank rows are keyed on
+a fingerprint that includes `effective_from`, and inserts are
+`on_conflict_do_nothing`, so editing a digit and re-seeding a warm database
+*inserts* rather than replaces — and for the open row that produces two rows both
+claiming to be current, which is the one ambiguity the comparison has to tolerate.
+
+`tests/unit/test_seed_coupling.py` now asserts the coupling directly: the
+fixture's payment details must equal the last four digits of the vendor's
+currently-effective row, its cited purchase order must exist, and every line it
+bills must have a matching SKU and agreed price. No database needed — both sides
+are Python literals — so it runs on the `make verify` side of the split.
+
+This is the same lesson as D-015, one layer out. A value that nothing reads is
+not validated by being written down, and the comment that documented the coupling
+was not a test.
+
+---
+
 ## D-015 — Using the extracted values is what proved they were wrong
 
 **Date:** 2026-09-10 · **Status:** accepted
@@ -100,7 +230,13 @@ the domain. This one cannot yet.
 
 ## D-013 — Bank-detail changes are detected but not yet detectable
 
-**Date:** 2026-09-10 · **Status:** accepted · **Has a known, unpaid cost**
+**Date:** 2026-09-10 · **Status:** CLOSED by D-016 on 2026-09-10
+
+> Kept rather than deleted. The gap it names is real history, and having
+> named it before closing it is worth more than a tidy log. Note that its
+> proposed mechanism — comparing the stored HMAC fingerprint — turned out not
+> to be executable: the fingerprint covers the full account number and an
+> invoice prints four digits of it. D-016 explains what replaced it.
 
 `BANK_DETAILS_CHANGED` is in the taxonomy, routes to treasury with the shortest
 clock in the system, and is covered by the match table. `MatchingService` sets

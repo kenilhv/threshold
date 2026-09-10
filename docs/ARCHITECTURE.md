@@ -138,6 +138,28 @@ in the exception set. A separate rule saying "block this one" would be a second
 source of truth, and the drift would eventually show up as an invoice reporting
 a blocking exception and paying anyway.
 
+**Payment details are compared against the vendor's own history.** A vendor
+bank change is the shape almost every real accounts-payable fraud takes: a
+genuine invoice, resent with altered remittance details. So the last four digits
+of the account and routing code are read off the page and compared against the
+row currently in force for that vendor — and an invoice that is otherwise
+perfect, right order, right price, goods received, blocks to treasury on the
+shortest clock in the system.
+
+The comparison reports a state rather than a boolean, because the interesting
+answers are the ones that are neither *matched* nor *changed*: the reading
+predates the feature, nothing legible was found, no vendor resolved, or the
+vendor has no payment details on file at all. A boolean collapses every one of
+those into "false", which reads as checked and fine. Each instead writes its own
+sentence into `skipped_checks`. An account the vendor has *replaced* is
+distinguished from one never seen — same code and same desk, different first
+phone call.
+
+The honest limit: this is tail-to-tail matching of four digits, not scheme-aware
+account verification, and an invoice whose payment block the parser cannot read
+auto-approves with a recorded skip. Both are stated in D-016 rather than papered
+over.
+
 **A check that did not run is recorded, not omitted.** Cross-currency prices are
 not compared at all — 100 EUR against 100 USD yields a variance of zero, which
 is not a match but a category error — and an extraction carrying no line items

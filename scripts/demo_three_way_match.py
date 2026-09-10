@@ -87,6 +87,22 @@ def billed_before_receipt() -> InvoiceSpec:
     )
 
 
+def bank_details_redirected() -> InvoiceSpec:
+    """Billed correctly, and asking to be paid somewhere new.
+
+    Every line agrees with the order and every item was received, so the
+    three-way match itself is clean. What is wrong is the account it wants
+    paying into, and this is the shape almost every real accounts-payable
+    fraud takes: a genuine invoice, resent with altered payment details.
+    """
+    return dataclasses.replace(
+        build_spec(),
+        invoice_number=_number("REDIR"),
+        bank_iban_last4="4417",
+        bank_routing_last4="7781",
+    )
+
+
 def _number(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8].upper()}"
 
@@ -118,6 +134,7 @@ def main() -> None:
         ("Billed as agreed, goods received", clean()),
         ("Billed above the agreed price", over_billed()),
         ("Billed before the goods arrived", billed_before_receipt()),
+        ("Billed correctly, into an account we have never paid", bank_details_redirected()),
     )
 
     print(f"\n{BOLD}Three-way match{RESET}")
@@ -156,7 +173,7 @@ def main() -> None:
             print(f"  {DIM}policy {decision['policy_version']}{RESET}\n")
             path.unlink(missing_ok=True)
 
-    print(f"{DIM}Same pipeline, same thresholds, three different answers.{RESET}\n")
+    print(f"{DIM}Same pipeline, same thresholds. The last one is arithmetically perfect.{RESET}\n")
 
 
 if __name__ == "__main__":

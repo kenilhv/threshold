@@ -10,8 +10,9 @@ show where that line is and why it sits there.
 > **Status: M3.** A PDF ingests, a worker extracts it, and a second worker
 > matches it against its purchase order and the goods received — producing a
 > disposition, the exceptions behind it, and whose desk each one lands on.
-> `make demo-match` submits three invoices and approves one, blocks one and
-> sends one for review. The milestones below are honest about what does not
+> `make demo-match` submits four invoices: one approves, one blocks on price,
+> one goes to receiving for review, and one — arithmetically perfect — blocks to
+> treasury because it asks to be paid into an account this vendor has never used. The milestones below are honest about what does not
 > exist yet. Every claim in this README is checkable against the repository.
 
 ---
@@ -141,7 +142,10 @@ Full reasoning, including what is deliberately *not* distributed and why:
       deadline, all written onto the row rather than re-derived later.
       Tolerances are a floor, a percentage and a ceiling, versioned as a set and
       stamped on every decision. Checks that could not run honestly are recorded
-      as skipped rather than passing silently.
+      as skipped rather than passing silently. Payment details are compared
+      against the vendor's own bank history, so a genuine invoice resent with
+      altered remittance details blocks to treasury even when every number on it
+      agrees.
 - [ ] M4 — the operator console
 - [ ] M5 — OpenTelemetry end to end, dashboards, alert rules, runbooks
 - [ ] M6 — evaluation harness, calibration curve, CI regression gate

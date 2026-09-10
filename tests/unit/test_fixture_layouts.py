@@ -60,8 +60,19 @@ def build_spec(
         tax_amount=Decimal("58.2920"),
         total=total,
         payment_terms="Net 30 days from invoice date",
+        # Coupled to the seed, the same way po_number is: these are the last
+        # four digits of Northgate's CURRENTLY EFFECTIVE bank row in
+        # scripts/seed.py -- routing 026009593, account 5510338291. Change one
+        # and the other has to move.
+        #
+        # This previously read "0248", which is the routing code Northgate
+        # RETIRED forty days before SEED_EPOCH, paired with their current
+        # account. That combination exists on no row, so once payment-detail
+        # comparison went live the golden "clean" invoice raised the highest-
+        # severity code in the system and every demo scenario collapsed to
+        # blocked. test_seed_coupling.py now fails if they drift again.
         bank_iban_last4="8291",
-        bank_routing_last4="0248",
+        bank_routing_last4="9593",
         po_number="PO-44718",
         seed=seed,
     )

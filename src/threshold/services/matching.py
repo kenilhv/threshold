@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Final
 
 import structlog
 from sqlalchemy import Select, func, select
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from threshold.domain.extraction import ExtractedInvoice
 from threshold.domain.matching import (
+    BankComparison,
     Disposition,
     InvoiceFacts,
     InvoiceLineFacts,
@@ -39,10 +41,24 @@ from threshold.domain.models import (
     PurchaseOrder,
     PurchaseOrderLine,
     Vendor,
+    VendorBankAccount,
 )
 from threshold.domain.tolerance import DEFAULT_POLICY, ZERO, TolerancePolicy
 
 log = structlog.get_logger(__name__)
+
+#: Below this, a payment identifier was not read well enough to accuse a vendor
+#: of changing their bank account.
+#:
+#: A module constant rather than a `TolerancePolicy` knob, and the difference is
+#: not cosmetic. A tolerance answers "how much drift is acceptable"; this answers
+#: "did we read it at all", which is identity rather than degree. It is also a
+#: property of one parser's scoring tiers -- 0.88 same-line, 0.58 next-line, and
+#: a 0.85x discount when two different values compete -- so 0.50 admits a
+#: next-line read and refuses a next-line read that disagreed with itself
+#: (0.493). Stamping that into the versioned policy would dress a second guess
+#: as calibration, at the exact milestone D-014 says not to.
+_BANK_READ_FLOOR: Final = Decimal("0.50")
 
 
 class MatchingError(RuntimeError):
@@ -120,12 +136,72 @@ class MatchingService:
             vendor_status=vendor_status,
             po_number=(invoice.po_number.value or None),
             duplicate_of_document_id=duplicate_of,
-            # Not wired. The decision layer detects this and the vendor bank
-            # history exists to support it, but the extraction schema does not
-            # carry the payment details printed on the page, so nothing here can
-            # populate it honestly. See D-013.
-            bank_details_changed=False,
+            bank_comparison=await self._compare_bank_details(session, invoice, vendor_id),
         )
+
+    async def _compare_bank_details(
+        self,
+        session: AsyncSession,
+        invoice: ExtractedInvoice,
+        vendor_id: uuid.UUID | None,
+    ) -> BankComparison:
+        """Do the payment details on the page match the ones we hold?
+
+        Tail-to-tail, on the last four digits of the account and of the routing
+        code. Not the stored fingerprint: that is an HMAC over the *full*
+        routing and account numbers, and the page carries four digits of
+        nineteen by deliberate design. D-013's original plan named the
+        fingerprint and was not executable; this corrects it.
+
+        Both identifiers must read, or the answer is NOT_READ. A routing-only
+        match is agreement about which *institution* is being paid while never
+        having seen the destination account, which is the most dangerous
+        available false negative -- and all four layouts print both, so
+        insisting costs nothing.
+        """
+        if vendor_id is None:
+            return BankComparison.NO_VENDOR
+
+        account_field = invoice.bank_account_last4
+        routing_field = invoice.bank_routing_last4
+        if account_field is None or routing_field is None:
+            return BankComparison.NOT_EXTRACTED
+        if (
+            account_field.value is None
+            or routing_field.value is None
+            or account_field.confidence < _BANK_READ_FLOOR
+            or routing_field.confidence < _BANK_READ_FLOOR
+        ):
+            return BankComparison.NOT_READ
+
+        # Every row, not just the open one: the retired/unknown distinction
+        # needs the history anyway, and reading them all means a vendor with two
+        # rows both claiming to be current -- a data-integrity bug -- fails
+        # quiet rather than manufacturing a fraud alert.
+        rows = (
+            await session.execute(
+                select(
+                    VendorBankAccount.account_number_last4,
+                    VendorBankAccount.routing_number_last4,
+                    VendorBankAccount.effective_to,
+                )
+                .where(VendorBankAccount.vendor_id == vendor_id)
+                .order_by(VendorBankAccount.effective_from.desc())
+            )
+        ).all()
+        if not rows:
+            return BankComparison.NO_HISTORY
+
+        printed = (account_field.value, routing_field.value)
+        if any(
+            (r.account_number_last4, r.routing_number_last4) == printed
+            for r in rows
+            if r.effective_to is None
+        ):
+            return BankComparison.MATCHED
+        if any((r.account_number_last4, r.routing_number_last4) == printed for r in rows):
+            return BankComparison.CHANGED_TO_RETIRED
+        return BankComparison.CHANGED
 
     async def _resolve_vendor(
         self, session: AsyncSession, invoice: ExtractedInvoice

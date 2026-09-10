@@ -27,6 +27,7 @@ import pytest_asyncio
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from threshold.domain.extraction import RESTRICTED_FIELD_KEYS, redacted_fields
 from threshold.domain.matching import Disposition
 from threshold.domain.models import Document, Extraction, MatchException, MatchResult, Vendor
 from threshold.domain.taxonomy import ExceptionCode, OwnerRole
@@ -62,6 +63,10 @@ def _field(value: object, confidence: float = 0.95) -> dict[str, Any]:
 def _invoice_fields(
     *,
     invoice_number: str,
+    bank_account: str | None = "8291",
+    bank_routing: str | None = "9593",
+    bank_confidence: float = 0.88,
+    omit_bank: bool = False,
     po_number: str | None = CLEAN_PO,
     vendor_name: str = "Northgate Supply",
     vendor_tax_id: str = "",
@@ -76,7 +81,14 @@ def _invoice_fields(
     subtotal = line_total
     tax = str((Decimal(subtotal) * Decimal("0.19")).quantize(Decimal("0.0001")))
     total = str(Decimal(subtotal) + Decimal(tax))
+    bank: dict[str, Any] = {}
+    if not omit_bank:
+        bank = {
+            "bank_account_last4": _field(bank_account, bank_confidence),
+            "bank_routing_last4": _field(bank_routing, bank_confidence),
+        }
     return {
+        **bank,
         "document_type": _field("invoice"),
         "invoice_number": _field(invoice_number),
         "vendor_name": _field(vendor_name),
@@ -428,3 +440,174 @@ class TestPreconditions:
         async with sessions() as session:
             with pytest.raises(MatchingError, match="no such document"):
                 await MatchingService().match_document(session, uuid.uuid4())
+
+
+class TestPaymentDetails:
+    """The flagship control, against real vendor bank history.
+
+    Northgate (V-100418) is seeded with two rows: account 8291 / routing 9593
+    currently effective, and account 0073 / routing 0248 retired forty days
+    before SEED_EPOCH. That history is what makes "changed since we last paid
+    them" answerable rather than merely "here is the current account".
+    """
+
+    async def _run(
+        self, sessions: async_sessionmaker[AsyncSession], fields: dict[str, Any]
+    ) -> tuple[list[MatchException], list[str], MatchResult]:
+        async with sessions() as session:
+            document = await _document_with_extraction(session, fields)
+            result = await MatchingService().match_document(session, document.id)
+            await session.flush()
+            raised = list(
+                (
+                    await session.execute(
+                        select(MatchException).where(MatchException.match_result_id == result.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            skips = list(result.skipped_checks)
+            disposition = result.disposition
+            await session.commit()
+        result.disposition = disposition
+        return raised, skips, result
+
+    @staticmethod
+    def _bank(raised: list[MatchException]) -> list[MatchException]:
+        return [e for e in raised if e.code == ExceptionCode.BANK_DETAILS_CHANGED.value]
+
+    async def test_the_current_account_matches_and_records_no_skip(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        raised, skips, result = await self._run(
+            sessions, _invoice_fields(invoice_number=f"BANKOK-{uuid.uuid4().hex[:8]}")
+        )
+        assert not self._bank(raised)
+        assert not [s for s in skips if s.startswith("payment-detail")]
+        assert result.disposition == Disposition.AUTO_APPROVE.value
+
+    async def test_an_account_we_have_never_held_blocks_to_treasury(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        """The redirect shape: details matching nothing in this vendor's history."""
+        raised, _, result = await self._run(
+            sessions,
+            _invoice_fields(
+                invoice_number=f"REDIRECT-{uuid.uuid4().hex[:8]}",
+                bank_account="4417",
+                bank_routing="7781",
+            ),
+        )
+        bank = self._bank(raised)
+        assert len(bank) == 1
+        assert bank[0].owner_role == OwnerRole.TREASURY.value
+        assert bank[0].severity == "block"
+        assert "differ from those last used" in bank[0].detail
+        assert not any(ch.isdigit() for ch in bank[0].detail), (
+            "the detail is shown to reviewers; the digits themselves are RESTRICTED"
+        )
+        assert result.disposition == Disposition.BLOCKED.value
+
+    async def test_a_retired_account_is_named_as_replaced_not_as_unknown(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        """Stale or replayed, rather than a redirect. Same desk, different call."""
+        raised, _, result = await self._run(
+            sessions,
+            _invoice_fields(
+                invoice_number=f"STALE-{uuid.uuid4().hex[:8]}",
+                bank_account="0073",
+                bank_routing="0248",
+            ),
+        )
+        bank = self._bank(raised)
+        assert len(bank) == 1
+        assert "since replaced" in bank[0].detail
+        assert result.disposition == Disposition.BLOCKED.value
+
+    async def test_a_routing_change_alone_is_still_a_change(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        """There is no immaterial fraction of a payment instruction."""
+        raised, _, _ = await self._run(
+            sessions,
+            _invoice_fields(invoice_number=f"ROUTE-{uuid.uuid4().hex[:8]}", bank_routing="0248"),
+        )
+        assert len(self._bank(raised)) == 1
+
+    async def test_a_vendor_with_no_payment_details_on_file_is_not_accused(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        """Calder and Roe is seeded active with no bank row.
+
+        Every genuine first invoice from a new supplier looks exactly like this.
+        Raising the highest-severity code on it would be a false positive by
+        construction, so it is recorded as not compared instead.
+        """
+        raised, skips, _ = await self._run(
+            sessions,
+            _invoice_fields(
+                invoice_number=f"NOHIST-{uuid.uuid4().hex[:8]}",
+                vendor_name="Calder and Roe",
+                po_number=None,
+            ),
+        )
+        assert not self._bank(raised)
+        assert any("nothing this invoice could have changed from" in s for s in skips)
+
+    async def test_an_unreadable_payment_line_is_recorded_not_ignored(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        raised, skips, _ = await self._run(
+            sessions,
+            _invoice_fields(
+                invoice_number=f"UNREAD-{uuid.uuid4().hex[:8]}",
+                bank_account=None,
+                bank_routing=None,
+            ),
+        )
+        assert not self._bank(raised)
+        assert any("could be read from the page" in s for s in skips)
+
+    async def test_a_low_confidence_read_does_not_accuse_anyone(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        """Below the read floor is "we did not read it", not "it changed"."""
+        raised, skips, _ = await self._run(
+            sessions,
+            _invoice_fields(
+                invoice_number=f"FAINT-{uuid.uuid4().hex[:8]}",
+                bank_account="4417",
+                bank_routing="7781",
+                bank_confidence=0.30,
+            ),
+        )
+        assert not self._bank(raised)
+        assert any("could be read from the page" in s for s in skips)
+
+    async def test_a_reading_written_before_the_feature_is_distinguishable(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        """A pre-1.1.0 JSONB row must not read as "asked and found nothing".
+
+        Different fact, different remediation: this one is fixed by
+        re-extracting, and that is only knowable because the field is absent
+        rather than defaulted to a not-found instance.
+        """
+        raised, skips, _ = await self._run(
+            sessions,
+            _invoice_fields(invoice_number=f"OLDROW-{uuid.uuid4().hex[:8]}", omit_bank=True),
+        )
+        assert not self._bank(raised)
+        assert any("predates payment-detail extraction" in s for s in skips)
+
+    async def test_the_review_projection_never_carries_the_payment_digits(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        """Dropped, not masked. Four digits is a short enough candidate list."""
+        fields = _invoice_fields(invoice_number=f"REDACT-{uuid.uuid4().hex[:8]}")
+        assert set(fields) >= RESTRICTED_FIELD_KEYS, "the fixture should carry them"
+        projected = redacted_fields(fields)
+        assert not (RESTRICTED_FIELD_KEYS & set(projected))
+        assert "invoice_number" in projected, "redaction must not gut the projection"
