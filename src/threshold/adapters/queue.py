@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Protocol, cast, runtime_checkable
 
 import structlog
@@ -222,15 +222,21 @@ class PostgresJobQueue:
         then hands a worker its batch in arbitrary order is FIFO in the part
         nobody observes and not FIFO in the part they do.
         """
-        now = datetime.now(UTC)
+        # The database's clock, never this process's. The reaper decides a lease
+        # has expired by comparing it with the database's now(), so a lease
+        # computed from the worker's clock is only as good as the agreement
+        # between two clocks -- and a worker VM that has drifted a few minutes
+        # behind after a host sleep writes leases that are already expired, so
+        # the reaper hands live work to a second worker. models.py has always
+        # claimed timestamps come from the database; the queue did not.
         stmt = (
             update(Job)
             .where(Job.id.in_(self._claimable().limit(limit).scalar_subquery()))
             .values(
                 state=JobState.CLAIMED.value,
                 claimed_by=worker_id,
-                claimed_at=now,
-                lease_expires_at=now + self._lease,
+                claimed_at=func.now(),
+                lease_expires_at=func.now() + self._lease,
                 attempts=Job.attempts + 1,
             )
             .returning(
@@ -267,7 +273,6 @@ class PostgresJobQueue:
         someone else is now doing this work and finishing would double-process
         it. Long jobs must therefore check the return value, not fire and forget.
         """
-        now = datetime.now(UTC)
         stmt = (
             update(Job)
             .where(
@@ -275,7 +280,8 @@ class PostgresJobQueue:
                 Job.claimed_by == worker_id,
                 Job.state == JobState.CLAIMED.value,
             )
-            .values(lease_expires_at=now + self._lease)
+            # Database clock, for the reason given in claim().
+            .values(lease_expires_at=func.now() + self._lease)
             .returning(Job.id)
         )
         return (await session.execute(stmt)).scalar_one_or_none() is not None
@@ -309,24 +315,30 @@ class PostgresJobQueue:
         exhausted = permanent or job.is_final_attempt
 
         if not exhausted:
-            retry_at = datetime.now(UTC) + backoff_for(job.attempts)
-            await session.execute(
-                update(Job)
-                .where(Job.id == job.id, Job.claimed_by == worker_id)
-                .values(
-                    state=JobState.PENDING.value,
-                    claimed_by=None,
-                    claimed_at=None,
-                    lease_expires_at=None,
-                    run_after=retry_at,
-                    last_error=error[:4000],
+            # Database clock: the claim predicate compares run_after with now().
+            retry_at = (
+                await session.execute(
+                    update(Job)
+                    .where(Job.id == job.id, Job.claimed_by == worker_id)
+                    .values(
+                        state=JobState.PENDING.value,
+                        claimed_by=None,
+                        claimed_at=None,
+                        lease_expires_at=None,
+                        run_after=func.now() + backoff_for(job.attempts),
+                        last_error=error[:4000],
+                    )
+                    # The value the database actually stored, so the log line
+                    # reports the retry time that will govern the claim rather
+                    # than this process's opinion of it.
+                    .returning(Job.run_after)
                 )
-            )
+            ).scalar_one_or_none()
             log.info(
                 "queue.retry_scheduled",
                 job_id=str(job.id),
                 attempt=job.attempts,
-                retry_at=retry_at.isoformat(),
+                retry_at=retry_at.isoformat() if retry_at else None,
             )
             return False
 
@@ -418,7 +430,7 @@ class PostgresJobQueue:
             # replay is an explicit human decision to run this again.
             dedupe_key=None,
         )
-        letter.replayed_at = datetime.now(UTC)
+        letter.replayed_at = func.now()  # database clock, like everything else here
         log.info("queue.replayed", dead_letter_id=str(dead_letter_id), job_id=str(job_id))
         return job_id
 
@@ -433,7 +445,7 @@ class PostgresJobQueue:
         that. Dead jobs are never purged; they are the ones somebody still has
         to look at.
         """
-        cutoff = datetime.now(UTC) - older_than
+        cutoff = func.now() - older_than
         result = await session.execute(
             delete(Job).where(Job.state == JobState.SUCCEEDED.value, Job.updated_at < cutoff)
         )

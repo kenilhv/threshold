@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -313,7 +313,7 @@ class TestLeaseRecovery:
             await s.execute(
                 update(Job)
                 .where(Job.id == job_id)
-                .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+                .values(lease_expires_at=func.now() - timedelta(seconds=1))
             )
             await s.commit()
 
@@ -361,7 +361,7 @@ class TestLeaseRecovery:
             await s.execute(
                 update(Job)
                 .where(Job.id == claimed[0].id)
-                .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+                .values(lease_expires_at=func.now() - timedelta(seconds=1))
             )
             await queue.reap_expired_leases(s)
             await s.commit()
@@ -421,7 +421,10 @@ class TestFailureHandling:
         for attempt in range(1, 4):
             async with sessionmaker_() as s:
                 # Clear any backoff so the next claim is immediate.
-                await s.execute(update(Job).values(run_after=datetime.now(UTC)))
+                # The database's clock. This used the host's, and the claim that
+                # follows compares against now() in the same transaction -- so
+                # it passed or failed on sub-millisecond skew between the two.
+                await s.execute(update(Job).values(run_after=func.now()))
                 jobs = await queue.claim(s, worker_id="w1", limit=1)
                 await s.commit()
             assert len(jobs) == 1, f"expected a claimable job on attempt {attempt}"
@@ -609,3 +612,79 @@ class _FailsFirstNClaims:
 
     async def reap_expired_leases(self, session: AsyncSession) -> int:
         return await self._inner.reap_expired_leases(session)
+
+
+class TestClockSkew:
+    """A worker's clock must not decide who owns a job.
+
+    The reaper judges a lease against the database's now(). Before this, the
+    queue computed the lease from the worker's own clock, so the two had to
+    agree -- and a worker VM that drifts behind after the host sleeps, which
+    WSL2 does, would write leases already expired from the database's point of
+    view. The reaper would then return live work to pending and a second
+    worker would run it. Every timestamp the queue compares is now written by
+    the database.
+    """
+
+    async def test_a_worker_minutes_behind_still_holds_a_valid_lease(
+        self,
+        queue: PostgresJobQueue,
+        sessionmaker_: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import threshold.adapters.queue as queue_module
+
+        real = queue_module.datetime
+
+        class TenMinutesSlow(real):  # type: ignore[misc, valid-type]
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[no-untyped-def, override]
+                return real.now(tz) - timedelta(minutes=10)
+
+        # A worker whose clock has drifted ten minutes behind the database's.
+        monkeypatch.setattr(queue_module, "datetime", TenMinutesSlow)
+
+        await enqueue_n(queue, sessionmaker_, 1)
+        async with sessionmaker_() as s:
+            claimed = await queue.claim(s, worker_id="slow-clock", limit=1)
+            await s.commit()
+        assert len(claimed) == 1
+
+        async with sessionmaker_() as s:
+            reaped = await queue.reap_expired_leases(s)
+            await s.commit()
+        assert reaped == 0, "the reaper took a live job from a worker whose clock is slow"
+
+        async with sessionmaker_() as s:
+            row = (await s.execute(select(Job).where(Job.id == claimed[0].id))).scalar_one()
+        assert row.state == JobState.CLAIMED.value
+        assert row.claimed_by == "slow-clock"
+
+    async def test_a_retry_is_scheduled_on_the_database_clock(
+        self,
+        queue: PostgresJobQueue,
+        sessionmaker_: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A worker ten minutes behind must not schedule a retry in the past."""
+        import threshold.adapters.queue as queue_module
+
+        real = queue_module.datetime
+
+        class TenMinutesSlow(real):  # type: ignore[misc, valid-type]
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[no-untyped-def, override]
+                return real.now(tz) - timedelta(minutes=10)
+
+        monkeypatch.setattr(queue_module, "datetime", TenMinutesSlow)
+
+        await enqueue_n(queue, sessionmaker_, 1)
+        async with sessionmaker_() as s:
+            job = (await queue.claim(s, worker_id="slow-clock", limit=1))[0]
+            await queue.fail(s, job, worker_id="slow-clock", error="transient", permanent=False)
+            await s.commit()
+
+        async with sessionmaker_() as s:
+            # Immediately claimable would mean the backoff was computed from a
+            # clock ten minutes in the past, and the retry skipped its delay.
+            assert await queue.claim(s, worker_id="other", limit=1) == []
