@@ -626,3 +626,349 @@ class DeadLetter(Base):
         ),
         Index("ix_dead_letter_unreplayed", "died_at", postgresql_where=replayed_at.is_(None)),
     )
+
+
+# --------------------------------------------------------------- matching ---
+# What was ordered, what arrived, and what the matcher concluded. These four
+# tables are the other two legs of the three-way match: without them an invoice
+# can only ever be checked against itself.
+
+
+class PurchaseOrder(Base):
+    """What was agreed. The reference the invoice is judged against.
+
+    ``po_number`` is unique because it is the join key printed on the invoice.
+    If two rows could share it, an invoice citing that number would match
+    whichever the query returned first, and the wrong agreement is worse than no
+    agreement -- it produces a confident approval against terms nobody signed.
+    """
+
+    __tablename__ = "purchase_order"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    po_number: Mapped[str] = mapped_column(
+        String(60), nullable=False, unique=True, info=classify(Sensitivity.PUBLIC)
+    )
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("vendor.id", ondelete="RESTRICT"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    currency: Mapped[str] = mapped_column(
+        String(3), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="open", info=classify(Sensitivity.PUBLIC)
+    )
+
+    #: Who to route a price or quantity dispute to. INTERNAL rather than PUBLIC:
+    #: it identifies an employee.
+    buyer_email: Mapped[str | None] = mapped_column(
+        String(320), nullable=True, info=classify(Sensitivity.INTERNAL)
+    )
+
+    ordered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    lines: Mapped[list[PurchaseOrderLine]] = relationship(
+        back_populates="purchase_order",
+        cascade="all, delete-orphan",
+        order_by="PurchaseOrderLine.line_number",
+    )
+    receipts: Mapped[list[GoodsReceipt]] = relationship(back_populates="purchase_order")
+
+    __table_args__ = (
+        CheckConstraint("length(currency) = 3", name="ck_po_currency_iso4217"),
+        CheckConstraint("status in ('open', 'closed', 'cancelled')", name="ck_po_status"),
+        Index("ix_purchase_order_vendor", "vendor_id"),
+    )
+
+
+class PurchaseOrderLine(Base):
+    """One agreed item, at one agreed price."""
+
+    __tablename__ = "purchase_order_line"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    purchase_order_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("purchase_order.id", ondelete="CASCADE"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    line_number: Mapped[int] = mapped_column(
+        Integer, nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    #: The authoritative pairing key. Descriptions are a fallback because they
+    #: are written by whoever raised the order.
+    sku: Mapped[str | None] = mapped_column(
+        String(80), nullable=True, info=classify(Sensitivity.INTERNAL)
+    )
+    #: INTERNAL: what a company buys reveals what it is building.
+    description: Mapped[str] = mapped_column(
+        Text, nullable=False, info=classify(Sensitivity.INTERNAL)
+    )
+
+    quantity_ordered: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), nullable=False, info=classify(Sensitivity.INTERNAL)
+    )
+    #: INTERNAL rather than PUBLIC: a unit price is a negotiated term, and the
+    #: set of them across a vendor is that vendor's price list.
+    unit_price: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), nullable=False, info=classify(Sensitivity.INTERNAL)
+    )
+
+    purchase_order: Mapped[PurchaseOrder] = relationship(back_populates="lines")
+
+    __table_args__ = (
+        UniqueConstraint("purchase_order_id", "line_number", name="uq_po_line_number"),
+        CheckConstraint("quantity_ordered > 0", name="ck_po_line_quantity_positive"),
+        CheckConstraint("unit_price >= 0", name="ck_po_line_price_non_negative"),
+        CheckConstraint("line_number > 0", name="ck_po_line_number_positive"),
+    )
+
+
+class GoodsReceipt(Base):
+    """What actually arrived, and when. The leg that makes the match three-way.
+
+    Kept as separate rows per delivery rather than a running total on the order
+    line. Partial deliveries are normal, and a total that is overwritten cannot
+    answer *when* the goods arrived -- which is the question asked when an
+    invoice is billed before its receipt.
+    """
+
+    __tablename__ = "goods_receipt"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    receipt_number: Mapped[str] = mapped_column(
+        String(60), nullable=False, unique=True, info=classify(Sensitivity.PUBLIC)
+    )
+    purchase_order_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("purchase_order.id", ondelete="RESTRICT"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    received_by: Mapped[str | None] = mapped_column(
+        String(320), nullable=True, info=classify(Sensitivity.INTERNAL)
+    )
+
+    purchase_order: Mapped[PurchaseOrder] = relationship(back_populates="receipts")
+    lines: Mapped[list[GoodsReceiptLine]] = relationship(
+        back_populates="goods_receipt", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (Index("ix_goods_receipt_po", "purchase_order_id"),)
+
+
+class GoodsReceiptLine(Base):
+    """How much of one ordered line arrived in one delivery."""
+
+    __tablename__ = "goods_receipt_line"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    goods_receipt_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("goods_receipt.id", ondelete="CASCADE"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    purchase_order_line_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("purchase_order_line.id", ondelete="RESTRICT"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    #: Signed. A return or correction is a negative receipt rather than an edit
+    #: to the original row, so the delivery history stays append-only and the
+    #: aggregate still lands on the right number.
+    quantity_received: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), nullable=False, info=classify(Sensitivity.INTERNAL)
+    )
+
+    goods_receipt: Mapped[GoodsReceipt] = relationship(back_populates="lines")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "goods_receipt_id", "purchase_order_line_id", name="uq_receipt_line_once_per_receipt"
+        ),
+        Index("ix_goods_receipt_line_po_line", "purchase_order_line_id"),
+    )
+
+
+class MatchResult(Base):
+    """What the matcher concluded, and on what evidence. Immutable, versioned.
+
+    Re-matching inserts version N+1 rather than updating N, for the same reason
+    extractions are versioned: the useful question is not only "what do we think
+    now" but "what did we think then, and why did it change". A receipt
+    arriving, a purchase order being corrected, or the tolerance policy moving
+    all legitimately change the answer, and each of those should leave a row
+    that can be diffed against the one before it.
+
+    ``extraction_id`` and ``policy_version`` together are what make the
+    conclusion reproducible: the same reading, judged under the same thresholds,
+    must produce the same disposition.
+    """
+
+    __tablename__ = "match_result"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("document.id", ondelete="CASCADE"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    extraction_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("extraction.id", ondelete="RESTRICT"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    #: Null when no purchase order was cited or none was found. Both are
+    #: recorded as exceptions; the null is the evidence, not the explanation.
+    purchase_order_id: Mapped[uuid.UUID | None] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("purchase_order.id", ondelete="RESTRICT"),
+        nullable=True,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    version: Mapped[int] = mapped_column(Integer, nullable=False, info=classify(Sensitivity.PUBLIC))
+    disposition: Mapped[str] = mapped_column(
+        String(20), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    policy_version: Mapped[str] = mapped_column(
+        String(40), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    #: Which invoice line the matcher believed each purchase-order line to be.
+    #: Stored so a wrong pairing is visible directly rather than inferred from
+    #: the exceptions it caused.
+    line_pairs: Mapped[list[dict[str, int]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+        info=classify(Sensitivity.INTERNAL),
+    )
+    #: Checks that were not run, and why. A skipped check recorded as an absence
+    #: is indistinguishable from a check that passed.
+    skipped_checks: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+        info=classify(Sensitivity.INTERNAL),
+    )
+
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    exceptions: Mapped[list[MatchException]] = relationship(
+        back_populates="match_result", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("document_id", "version", name="uq_match_result_version"),
+        CheckConstraint(
+            "disposition in ('auto_approve', 'needs_review', 'blocked')",
+            name="ck_match_result_disposition",
+        ),
+        CheckConstraint("version > 0", name="ck_match_result_version_positive"),
+        Index("ix_match_result_document", "document_id", "version"),
+    )
+
+
+class MatchException(Base):
+    """One reason an invoice did not pass, with its owner and its deadline.
+
+    ``owner_role`` and ``due_at`` are written here rather than looked up from
+    the taxonomy at read time, and both for the same reason: this row is the
+    record of a decision made at a moment. Routing rules change, and a report
+    that re-derives ownership from today's table would silently restate who was
+    responsible for an exception raised last quarter. ``due_at`` is stamped
+    because an SLA measured from ``now()`` is a deadline that never arrives.
+    """
+
+    __tablename__ = "match_exception"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    match_result_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("match_result.id", ondelete="CASCADE"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    code: Mapped[str] = mapped_column(String(40), nullable=False, info=classify(Sensitivity.PUBLIC))
+    severity: Mapped[str] = mapped_column(
+        String(10), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    owner_role: Mapped[str] = mapped_column(
+        String(20), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    due_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    #: Human-readable, shown to a reviewer. INTERNAL: it quotes descriptions and
+    #: amounts from the invoice.
+    detail: Mapped[str] = mapped_column(Text, nullable=False, info=classify(Sensitivity.INTERNAL))
+
+    invoice_line_number: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+    purchase_order_line_number: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+
+    #: The numbers behind the judgment: expected, actual, variance, and which
+    #: threshold it tripped. Carried rather than recomputed for display, because
+    #: a number derived twice eventually disagrees with itself.
+    breach: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB, nullable=True, info=classify(Sensitivity.INTERNAL)
+    )
+
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+
+    match_result: Mapped[MatchResult] = relationship(back_populates="exceptions")
+
+    __table_args__ = (
+        CheckConstraint(
+            "severity in ('block', 'review', 'info')", name="ck_match_exception_severity"
+        ),
+        Index(
+            "ix_match_exception_open_by_owner",
+            "owner_role",
+            "due_at",
+            postgresql_where=text("resolved_at IS NULL"),
+        ),
+        Index("ix_match_exception_code", "code"),
+    )

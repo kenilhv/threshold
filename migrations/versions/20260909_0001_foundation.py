@@ -47,9 +47,7 @@ def upgrade() -> None:
         sa.Column("country_code", sa.String(length=2), nullable=False),
         sa.Column("default_currency", sa.String(length=3), nullable=False),
         sa.Column("tax_id", sa.String(length=60), nullable=True),
-        sa.Column(
-            "status", sa.String(length=20), server_default="active", nullable=False
-        ),
+        sa.Column("status", sa.String(length=20), server_default="active", nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -65,12 +63,8 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("vendor_number"),
         sa.CheckConstraint("length(country_code) = 2", name="ck_vendor_country_iso3166"),
-        sa.CheckConstraint(
-            "length(default_currency) = 3", name="ck_vendor_currency_iso4217"
-        ),
-        sa.CheckConstraint(
-            "status in ('active', 'on_hold', 'inactive')", name="ck_vendor_status"
-        ),
+        sa.CheckConstraint("length(default_currency) = 3", name="ck_vendor_currency_iso4217"),
+        sa.CheckConstraint("status in ('active', 'on_hold', 'inactive')", name="ck_vendor_status"),
     )
     # Case-insensitive vendor lookup is the hot path for resolution in M3.
     op.execute("CREATE INDEX ix_vendor_display_name_lower ON vendor (lower(display_name))")

@@ -33,9 +33,7 @@ target_metadata = Base.metadata
 
 def _include_object(obj: object, name: str | None, type_: str, *_: object) -> bool:
     """Keep autogenerate from proposing drops for things it does not own."""
-    if type_ == "table" and name in {"alembic_version"}:
-        return False
-    return True
+    return not (type_ == "table" and name in {"alembic_version"})
 
 
 def run_migrations_offline() -> None:

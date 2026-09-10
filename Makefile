@@ -37,20 +37,33 @@ ps: ## Show service status
 
 # ------------------------------------------------------------ migrations ---
 
+# --build, because migrations are baked into the image rather than mounted (see
+# the migrate service in docker-compose.yml). Without it a revision written five
+# minutes ago is not in the image and `upgrade head` reports success having
+# stopped at the previous one -- which looks exactly like having nothing to do.
 .PHONY: migrate
 migrate: ## Apply migrations
-	$(COMPOSE) run --rm migrate
+	$(COMPOSE) run --build --rm migrate
 
+# Host-side deliberately, unlike every other alembic target here. Autogenerate
+# needs two things the runtime image does not have and should not have: the
+# working tree's models rather than the ones baked into the image, and ruff for
+# the post-write hook. Run in the container it silently produces an empty
+# revision, because the image's models match the database it is diffing against.
 .PHONY: migration
 migration: ## Autogenerate a migration:  make migration m="add invoice table"
-	$(COMPOSE) run --rm migrate alembic revision --autogenerate -m "$(m)"
+	@test -n "$(m)" || { echo 'usage: make migration m="what changed"'; exit 1; }
+	THRESHOLD_DATABASE_URL=postgresql+asyncpg://threshold:threshold@localhost:5432/threshold 	THRESHOLD_REDIS_URL=redis://localhost:6379/0 	THRESHOLD_S3_ACCESS_KEY_ID=minioadmin 	THRESHOLD_S3_SECRET_ACCESS_KEY=minioadmin 	python -m alembic revision --autogenerate -m "$(m)"
+	@echo "review it before committing: autogenerate does not write partial indexes,"
+	@echo "check constraints it cannot infer, or data migrations."
 
 .PHONY: migrate-roundtrip
 migrate-roundtrip: ## Prove every migration reverses: upgrade -> downgrade -> upgrade
-	$(COMPOSE) run --rm migrate alembic upgrade head
+	$(COMPOSE) run --build --rm migrate alembic upgrade head
 	$(COMPOSE) run --rm migrate alembic downgrade base
 	$(COMPOSE) run --rm migrate alembic upgrade head
 	@echo "migrations reverse cleanly"
+	@echo "note: this leaves an empty database. run 'make seed'."
 
 .PHONY: seed
 seed: ## Load reference data (idempotent)
@@ -68,14 +81,14 @@ test-integration: ## Integration tests (requires: make up)
 
 .PHONY: lint
 lint: ## ruff + mypy --strict
-	python -m ruff check src tests scripts
-	python -m ruff format --check src tests scripts
+	python -m ruff check src tests scripts seeds migrations
+	python -m ruff format --check src tests scripts seeds migrations
 	python -m mypy
 
 .PHONY: fmt
 fmt: ## Apply formatting and fixable lints
-	python -m ruff format src tests scripts
-	python -m ruff check --fix src tests scripts
+	python -m ruff format src tests scripts seeds migrations
+	python -m ruff check --fix src tests scripts seeds migrations
 
 .PHONY: verify
 verify: lint test ## What CI runs on every commit
