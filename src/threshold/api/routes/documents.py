@@ -31,7 +31,7 @@ from threshold.adapters.db import get_session
 from threshold.adapters.extraction.port import ExtractionError
 from threshold.api import idempotency
 from threshold.api.dependencies import get_ingest_service
-from threshold.domain.models import Document, Extraction
+from threshold.domain.models import Document, Extraction, MatchException, MatchResult
 from threshold.services.ingest import (
     DocumentTooLargeError,
     IngestService,
@@ -83,6 +83,38 @@ class DocumentDetail(BaseModel):
     extractor_id: str | None
     lowest_decision_confidence: str | None
     fields: dict[str, object] | None
+
+
+class ExceptionView(BaseModel):
+    code: str
+    severity: str
+    owner_role: str
+    detail: str
+    due_at: str
+    invoice_line_number: int | None = None
+    purchase_order_line_number: int | None = None
+    #: Expected, actual, variance and which threshold it tripped. Present only
+    #: on exceptions that came from a tolerance comparison.
+    breach: dict[str, object] | None = None
+
+
+class MatchView(BaseModel):
+    """What the matcher concluded, and everything needed to argue with it.
+
+    ``skipped_checks`` is here rather than in a log because a reviewer looking
+    at a clean result has to be able to tell whether every check ran. An absent
+    check and a passing check look identical otherwise, and the difference is
+    the whole value of the answer.
+    """
+
+    document_id: str
+    version: int
+    disposition: str
+    policy_version: str
+    decided_at: str
+    line_pairs: list[dict[str, int]]
+    skipped_checks: list[str]
+    exceptions: list[ExceptionView]
 
 
 @router.post(
@@ -212,4 +244,72 @@ async def get_document(
             str(extraction.lowest_decision_confidence) if extraction else None
         ),
         fields=extraction.fields if extraction else None,
+    )
+
+
+@router.get(
+    "/{document_id}/match",
+    response_model=MatchView,
+    summary="Fetch the most recent matching decision for a document",
+    responses={
+        404: {"description": "No such document, or it has not been matched yet."},
+    },
+)
+async def get_match(
+    document_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> MatchView:
+    """The latest version only.
+
+    Earlier versions are kept and are the audit trail, but a caller asking "can
+    this be paid" wants the current answer. Serving a history by default would
+    make the common question the awkward one.
+    """
+    result = (
+        await session.execute(
+            select(MatchResult)
+            .where(MatchResult.document_id == document_id)
+            .order_by(MatchResult.version.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if result is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "no matching decision for this document yet",
+        )
+
+    exceptions = (
+        (
+            await session.execute(
+                select(MatchException)
+                .where(MatchException.match_result_id == result.id)
+                .order_by(MatchException.due_at, MatchException.code)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    return MatchView(
+        document_id=str(result.document_id),
+        version=result.version,
+        disposition=result.disposition,
+        policy_version=result.policy_version,
+        decided_at=result.decided_at.isoformat(),
+        line_pairs=list(result.line_pairs),
+        skipped_checks=list(result.skipped_checks),
+        exceptions=[
+            ExceptionView(
+                code=item.code,
+                severity=item.severity,
+                owner_role=item.owner_role,
+                detail=item.detail,
+                due_at=item.due_at.isoformat(),
+                invoice_line_number=item.invoice_line_number,
+                purchase_order_line_number=item.purchase_order_line_number,
+                breach=item.breach,
+            )
+            for item in exceptions
+        ],
     )

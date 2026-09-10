@@ -119,7 +119,7 @@ class DeterministicExtractor:
             subtotal=subtotal,
             tax_amount=tax_amount,
             total=total,
-            line_items=(),  # line-item extraction is layout-sensitive; M3.
+            line_items=_find_line_items(lines),
         )
 
         return ExtractionResult(
@@ -192,12 +192,156 @@ def _parse_amount(raw: str) -> Decimal | None:
 
 
 _AMOUNT_PATTERN = re.compile(r"[-(]?\s*[\d][\d.,\s]{0,18}\d(?:\s*\))?")
+_PERCENT_SUFFIX = re.compile(r"\s*%")
+
+
+# ------------------------------------------------------------- line items --
+
+#: A record starts with its position number on a line of its own. Every tabular
+#: layout here emits one, and it is the only marker that reliably separates one
+#: item from the next once ``extract_text`` has flattened the columns.
+_POSITION_LINE = re.compile(r"^\s*(\d{1,3})\s*$")
+
+#: Where the item table stops. Reached the totals block, so there are no more
+#: items, whatever else is below.
+_TOTALS_BOUNDARY = re.compile(
+    r"(?:subtotal|zwischensumme|subtotaal|net\s*total|gesamtbetrag|total|totaal|mwst|btw|vat)",
+    re.IGNORECASE,
+)
+
+#: A unit of measure: a short alphabetic token sitting between the quantity and
+#: the price. Matched so it can be excluded from the description rather than
+#: captured -- nothing downstream compares units yet, and pretending otherwise
+#: would put an unchecked field in front of a reviewer.
+_UNIT_TOKEN = re.compile(r"^[A-Za-z]{1,8}\.?$")
+
+
+def _numeric_lines(block: list[str]) -> list[int]:
+    """Indices of lines that parse as a number, in order."""
+    return [
+        index
+        for index, line in enumerate(block)
+        if _AMOUNT_PATTERN.fullmatch(line.strip()) and _parse_amount(line) is not None
+    ]
+
+
+def _find_line_items(lines: list[str]) -> tuple[ExtractedLineItem, ...]:
+    """Read the item table.
+
+    ``extract_text`` flattens a table into one line per cell, in reading order,
+    so a record arrives as::
+
+        01
+        NG-0O10l
+        Hex bolt M8x40 zinc plated, DIN 933, boxed
+        100
+        12,00
+        BOX
+        18,40
+        220,80
+
+    Two things make that parseable without knowing the column geometry. The
+    position number is alone on its line and starts a record. And the last three
+    numbers in a record are always quantity, unit price and line total, in that
+    order, because they are the last three columns.
+
+    Reading the numbers from the *end* is what makes the wrapped description
+    safe. "boxed 100" wraps, so ``100`` appears as a numeric line in the middle
+    of the record -- a parser taking the first three numbers would read a
+    quantity of 100 and a unit price of 12. Taking the last three leaves the
+    stray number where it belongs, in the description.
+
+    Anything that does not fit this shape yields no line items rather than
+    guessed ones. A missing line is a check the matcher records as skipped; an
+    invented line is a price comparison against a number nobody printed.
+    """
+    # A bare number on its own line is not enough to identify a position: this
+    # layout wraps "…boxed 100" and the stray "100" looks exactly like one, so
+    # every record was being split in half by its own description.
+    #
+    # What separates them is that positions count. Keeping only the candidates
+    # that form a run 1, 2, 3… discards the wrapped fragment without needing to
+    # know anything about the column geometry.
+    candidates = [
+        (index, int(match.group(1)))
+        for index, line in enumerate(lines)
+        if (match := _POSITION_LINE.match(line)) and not _TOTALS_BOUNDARY.search(line)
+    ]
+    starts: list[int] = []
+    expected = 1
+    for index, value in candidates:
+        if value == expected:
+            starts.append(index)
+            expected += 1
+    if not starts:
+        return ()
+
+    stop = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if index > starts[0] and _TOTALS_BOUNDARY.search(line)
+        ),
+        len(lines),
+    )
+    starts = [index for index in starts if index < stop]
+
+    items: list[ExtractedLineItem] = []
+    for order, start in enumerate(starts):
+        end = starts[order + 1] if order + 1 < len(starts) else stop
+        block = [line.strip() for line in lines[start + 1 : end] if line.strip()]
+        if len(block) < 4:
+            continue
+
+        sku, rest = block[0], block[1:]
+        numeric = _numeric_lines(rest)
+        if len(numeric) < 3:
+            continue
+
+        qty_at, price_at, total_at = numeric[-3], numeric[-2], numeric[-1]
+        quantity = _parse_amount(rest[qty_at])
+        unit_price = _parse_amount(rest[price_at])
+        line_total = _parse_amount(rest[total_at])
+        if quantity is None or unit_price is None or line_total is None:
+            continue
+
+        description = " ".join(
+            part
+            for index, part in enumerate(rest[:qty_at])
+            if not (index == qty_at - 1 and _UNIT_TOKEN.match(part))
+        ).strip()
+        if not description:
+            continue
+
+        # The same corroboration the totals get: three numbers that agree are
+        # three independent readings confirming each other, and three that do
+        # not are a warning that the columns were misread.
+        reconciles = abs(quantity * unit_price - line_total) <= Decimal("0.01")
+        confidence = 0.88 if reconciles else 0.5
+
+        items.append(
+            ExtractedLineItem(
+                description=ExtractedField(
+                    value=description, confidence=confidence, raw_text=description
+                ),
+                quantity=ExtractedField(value=quantity, confidence=confidence),
+                unit_price=ExtractedField(value=unit_price, confidence=confidence),
+                line_total=ExtractedField(value=line_total, confidence=confidence),
+                sku=(
+                    ExtractedField(value=sku, confidence=confidence, raw_text=sku)
+                    if _TOKEN_PATTERN.fullmatch(sku)
+                    else None
+                ),
+            )
+        )
+
+    return tuple(items)
 
 
 def _find_labelled_amount(
     lines: list[str], label_pattern: str, currency: str | None
 ) -> ExtractedField[Decimal]:
-    label_re = re.compile(label_pattern, re.IGNORECASE)
+    label_re = re.compile(label_pattern + r"(?![\w-])", re.IGNORECASE)
     candidates: list[tuple[Decimal, float, str]] = []
 
     for index, line in enumerate(lines):
@@ -211,6 +355,13 @@ def _find_labelled_amount(
             if offset == 0:
                 target = label_re.sub(" ", target)
             for match in _AMOUNT_PATTERN.finditer(target):
+                # "zzgl. MwSt. 19,00 %" carries the rate on the label line and
+                # the amount on the next one. Read naively the rate wins, being
+                # on the same line and therefore more confident, and the invoice
+                # comes out with 19.00 of tax instead of 58.29. A percentage is
+                # never a money amount, whatever line it is on.
+                if _PERCENT_SUFFIX.match(target[match.end() :]):
+                    continue
                 amount = _parse_amount(match.group())
                 if amount is None:
                     continue
@@ -275,7 +426,11 @@ _TOKEN_PATTERN = re.compile(r"[A-Z0-9][A-Z0-9\-/_]{2,}", re.IGNORECASE)
 
 
 def _find_labelled_token(lines: list[str], label_pattern: str) -> ExtractedField[str]:
-    label_re = re.compile(label_pattern + r"\s*[:#]?\s*", re.IGNORECASE)
+    # ``(?![\w-])``: a label is only a label when something separates it from
+    # the value. Without it "PO-44718" parses as the label "PO" plus the value
+    # "-44718", the token finder drops the hyphen, and the purchase order
+    # number silently loses its prefix -- which then matches no order at all.
+    label_re = re.compile(label_pattern + r"(?![\w-])\s*[:#]?\s*", re.IGNORECASE)
     candidates: list[tuple[str, float, str]] = []
 
     for index, line in enumerate(lines):

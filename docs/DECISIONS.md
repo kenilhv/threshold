@@ -5,6 +5,129 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-015 — Using the extracted values is what proved they were wrong
+
+**Date:** 2026-09-10 · **Status:** accepted
+
+The extraction tier shipped in M1 with tests passing. Every one of those tests
+asserted that a field was read; none asserted it was read *correctly against
+something that would notice*. The first invoice put through the matcher came
+back with three defects, all of which had been there since M1:
+
+- **The purchase-order number lost its prefix.** `PO-44718` parsed as the label
+  `PO` followed by the value `-44718`, the token pattern dropped the leading
+  hyphen, and the field came out `44718` — a number matching no order on file.
+  A label is only a label when something separates it from the value, so the
+  label pattern now requires that separator.
+- **The VAT rate was being read as the VAT amount.** The line prints as
+  `zzgl. MwSt. 19,00 %` with the amount `58,29` on the following line, so the
+  rate is nearer the label and scores higher. The invoice came out carrying
+  19.00 of tax instead of 58.29. A percentage is never a money amount, whatever
+  line it sits on.
+- **There were no line items at all.** `line_items=()` with a comment deferring
+  it to M3. A three-way match with no lines has no price to compare and no
+  quantity to compare, which is the entire check.
+
+The first two were caught by the arithmetic corroboration already in the
+extractor — subtotal plus tax did not reconcile, so confidence dropped and the
+invoice blocked rather than paying. The mechanism worked. It just could not say
+*which* number was wrong, and nothing downstream was consuming the value closely
+enough to find out.
+
+The general lesson is not about extraction. A field that is stored and never
+read is not verified by being stored, and a test that asserts a value exists
+verifies less than it appears to. These bugs survived a milestone because the
+only consumer was a JSONB column.
+
+Line-item extraction reads a record's numbers from the *end*. `extract_text`
+flattens a table to one line per cell, so a wrapped description like
+"…boxed / 100" puts a stray number in the middle of the record; taking the first
+three numbers reads a quantity of 100 and a unit price of 12. The last three are
+always quantity, unit price and line total, because they are the last three
+columns. Records are separated by position numbers, identified as the
+subsequence that counts 1, 2, 3… — the stray `100` looks exactly like a position
+otherwise, and was splitting every record in half.
+
+Anything not fitting that shape yields no line items rather than guessed ones,
+and the matcher records "no line items" as a skipped check. That is the point:
+before this, an invoice with no lines matched clean, because there was nothing
+to disagree with. An invoice that was never compared must not read the same as
+one that was compared and passed.
+
+---
+
+## D-014 — The auto-approval gate is provisional, and says so
+
+**Date:** 2026-09-10 · **Status:** accepted · **Has a known, unpaid cost**
+
+`minimum_field_confidence` is 0.50. It is the weakest number in the system and
+the one most likely to be wrong.
+
+A gate is a probability threshold: below *this likelihood of being right*, do
+not act without a human. The deterministic tier does not produce probabilities.
+It produces an ordinal signal — 0.88 means "found immediately after its label",
+0.62 means "found on the following line", 0.45 is a hardcoded admission that
+finding an unlabelled vendor name near the top of a page is guesswork, and 0.0
+means "not found". None of those numbers has been measured against how often
+that reading is actually correct.
+
+So any threshold is a guess. The honest response is to pick the only boundary
+those numbers genuinely support — between "read something" and "read nothing" —
+and to say plainly that it is provisional. M6 builds the calibration curve, and
+this number has to be re-derived from it rather than tuned until the demo looks
+good. Tuning it against a fixture is how a control becomes a decoration.
+
+Two things follow from taking that seriously:
+
+**Vendor identity is corroborated, not scored.** The extractor rates the vendor
+name 0.45 by construction. But once that string has matched a row in the vendor
+master, the identity no longer rests on the heuristic — an independent source
+agreed. So the matcher drops `vendor_name` from the gate *when resolution
+succeeded*, which is the same argument the extractor already makes when subtotal
+plus tax reconciles to the total. A name that fails to resolve is not discounted
+at all: it has already raised `VENDOR_UNKNOWN`, which blocks.
+
+**The stored score is left alone.** `Extraction.lowest_decision_confidence`
+still records the raw reading. The corroborated value is a different question
+asked at decision time, and collapsing the two would destroy the number M6 needs
+to calibrate against.
+
+The unpaid cost is plain: until M6, this system's auto-approval boundary rests
+on a number nobody has validated. Every other threshold here can be argued from
+the domain. This one cannot yet.
+
+---
+
+## D-013 — Bank-detail changes are detected but not yet detectable
+
+**Date:** 2026-09-10 · **Status:** accepted · **Has a known, unpaid cost**
+
+`BANK_DETAILS_CHANGED` is in the taxonomy, routes to treasury with the shortest
+clock in the system, and is covered by the match table. `MatchingService` sets
+its flag to `False` unconditionally, so in the running pipeline it can never
+fire.
+
+The reason is a gap in the middle. `VendorBankAccount` keeps payment details as
+history specifically so "changed since we last paid them" is answerable, and the
+invoice fixtures render a masked IBAN on the page. But `ExtractedInvoice` has no
+field for payment details and the extractor does not read them, so there is
+nothing to compare the history against.
+
+This is recorded rather than quietly worked around because it is the flagship
+control. The architecture document calls a vendor bank change the
+highest-severity exception the system knows about, and it is the shape almost
+every real accounts-payable fraud takes. A reader who sees the code in the
+taxonomy is entitled to assume it fires.
+
+Closing it needs three things: a payment-details field on the extraction schema,
+a parser for the masked IBAN and sort-code shapes the layouts render, and a
+comparison against the current `VendorBankAccount` fingerprint. None of it is
+hard. It was left out of M3 rather than half-done inside it, because a detector
+wired to a field nobody populates is worse than no detector — it reads as
+covered.
+
+---
+
 ## D-012 — The queue tests own their database, and `claim` sorts what it returns
 
 **Date:** 2026-09-09 · **Status:** accepted

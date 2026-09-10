@@ -138,6 +138,15 @@ class TolerancePolicy:
     #: against the *minimum* confidence across the fields a decision reads, never
     #: a mean: an average hides one unreadable field behind four clear ones, and
     #: the unreadable one is the one that matters.
+    #:
+    #: **Provisional, and the weakest number in this file.** The deterministic
+    #: tier's confidences are ordinal, not calibrated -- 0.88 means "found next
+    #: to its label" and 0.62 means "found on the following line", and neither
+    #: was ever measured against how often those readings are actually right. A
+    #: gate is a probability threshold, so setting one against numbers that are
+    #: not probabilities is guesswork dressed as a control. Until M6 produces a
+    #: calibration curve, this sits at the only boundary the tier's numbers
+    #: genuinely support: between "read something" and "read nothing". See D-014.
     minimum_field_confidence: Decimal
 
     def __post_init__(self) -> None:
@@ -171,5 +180,5 @@ DEFAULT_POLICY: Final = TolerancePolicy(
         percentage=Decimal("0.5"),
         absolute_cap=Decimal("25"),
     ),
-    minimum_field_confidence=Decimal("0.80"),
+    minimum_field_confidence=Decimal("0.50"),
 )

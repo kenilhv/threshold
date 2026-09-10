@@ -34,11 +34,11 @@ Operator console (Next.js) ── human approves / rejects / holds
 Payment executor (Go) — idempotency key, double-entry ledger, Stripe sandbox
 ```
 
-Built today: everything down to and including the worker pool. A PDF ingests,
-the job is enqueued in the same transaction as the document row, and a worker
-claims it, extracts it and writes an immutable versioned extraction. The
-`extract` step currently runs the deterministic tier; the model tier arrives with
-M7. Everything from `match` rightwards is M3 onwards.
+Built today: everything down to and including `classify`. A PDF ingests, a
+worker extracts it, and a second job matches the result against its purchase
+order and the goods received, writing a disposition with routed exceptions
+attached. The `extract` step runs the deterministic tier; the model tier arrives
+with M7. Approval, the console and the payment executor are M4 onwards.
 
 ---
 
@@ -87,6 +87,71 @@ per dataset so a 54% overbill still reads as 54%.
 The consequence for the agent is that it *cannot* exfiltrate a bank number
 because it never held one. It sees `bank_changed: true`. Privacy control and
 injection control, one mechanism.
+
+---
+
+## The decision, and why it is arithmetic rather than judgment
+
+Three-way match asks one question: does what we are being billed agree with what
+we agreed to buy and what actually arrived? All three legs are rows in Postgres,
+so the answer is a pure function and `domain/matching.py` is written as one — no
+database, no clock, no model. `tests/unit/test_matching.py` states every case as
+inputs and an exact set of expected exception codes, which is what makes "why
+was this blocked?" answerable by reading a function instead of replaying a run.
+
+**The taxonomy is frozen, and its distinctions are borrowed.** Codes are added,
+never repurposed: dashboards, SLA reports and eventually the labelled evaluation
+set all key off those strings, so redefining one silently reinterprets every
+decision already stored under it. The cuts come from SAP's Logistics Invoice
+Verification tolerance keys rather than from first principles, because those
+survived decades of real accounts-payable practice. Three are easy to miss:
+
+* Billed-before-receipt (DW) is not over-billing (DQ). The arithmetic is
+  identical — billed exceeds received — and the problems are different. Over-
+  billing is a dispute with the vendor and belongs to the buyer; nothing
+  received yet is usually a paperwork lag and belongs to receiving. Collapsing
+  them sends half of everything to the wrong desk.
+* Immaterial differences are absorbed rather than escalated (BD). Paging a human
+  for eleven cents costs more than the money and teaches reviewers to approve
+  without reading, which is how the expensive exception gets waved through too.
+* Under-billing is informational and never blocks. Being charged less than
+  agreed is not a control failure.
+
+**Every exception carries a category, an owner and a clock.** Routing follows
+where the authority to fix the problem sits: accounts payable cannot decide
+whether a price rise was agreed, and a buyer cannot confirm a pallet arrived.
+The owner and the deadline are written onto the row rather than derived from the
+taxonomy at read time, because a report that re-derives ownership from today's
+rules silently restates who was responsible last quarter, and an SLA measured
+from `now()` is a deadline that never arrives.
+
+**A tolerance is three numbers, not one.** A floor below which any difference is
+immaterial, a percentage for the middle of the range, and a ceiling so a tenth
+of a percent of a very large invoice cannot be absorbed in silence. A single
+percentage fails on ten-cent parts; a single absolute fails on million-dollar
+orders. The floor gates, it does not trigger. The whole policy is versioned as a
+set and stamped on every decision, because the thresholds are not independent
+and a decision that cannot name the ones it used cannot be reproduced.
+
+**The disposition is derived, never decided.** It is the worst severity present
+in the exception set. A separate rule saying "block this one" would be a second
+source of truth, and the drift would eventually show up as an invoice reporting
+a blocking exception and paying anyway.
+
+**A check that did not run is recorded, not omitted.** Cross-currency prices are
+not compared at all — 100 EUR against 100 USD yields a variance of zero, which
+is not a match but a category error — and an extraction carrying no line items
+compares nothing. Both write into `skipped_checks` on the result, because an
+absent check and a passing check are indistinguishable from the outside, and
+that difference is the whole value of the answer.
+
+Two properties in the test suite keep the taxonomy honest: every code must be
+reachable from the case table, and every owner role must receive work. Both
+failed the first time they ran. `TAX_VARIANCE` was in the taxonomy with nothing
+able to raise it, because checking tax needs per-jurisdiction rates this system
+does not have — so it was removed rather than left looking covered.
+
+`make demo-match` submits three real invoices and prints what happened to each.
 
 ---
 
@@ -316,8 +381,8 @@ src/threshold/
   config/         twelve-factor settings
 migrations/       Alembic, reversible, one transaction per upgrade
 infra/local/      Keycloak realm and other local-only fixtures
-  services/       use cases that compose adapters — ingestion today
-scripts/          seed, smoke test, queue CLI, crash-recovery demo
+  services/       use cases that compose adapters — ingestion, matching
+scripts/          seed, smoke test, queue CLI, crash and match demos
 tests/unit/       no stack required, runs on every commit
 tests/integration/ requires `make up`
 ```

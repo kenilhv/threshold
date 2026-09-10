@@ -90,6 +90,9 @@ class InvoiceFacts:
     lines: tuple[InvoiceLineFacts, ...]
     lowest_field_confidence: Decimal
     vendor_id: uuid.UUID | None = None
+    #: As recorded on the vendor, not as claimed by the invoice. ``None`` when
+    #: the vendor did not resolve, in which case VENDOR_UNKNOWN already fired.
+    vendor_status: str | None = None
     po_number: str | None = None
     #: Set when this vendor has already billed under this invoice number.
     duplicate_of_document_id: uuid.UUID | None = None
@@ -389,6 +392,16 @@ def three_way_match(
                 "the billing party could not be resolved to a known vendor",
             )
         )
+    elif invoice.vendor_status is not None and invoice.vendor_status != "active":
+        # Checked against the vendor record rather than anything on the page.
+        # A hold exists precisely because the invoices keep looking fine.
+        problems.append(
+            _raise(
+                ExceptionCode.VENDOR_ON_HOLD,
+                f"vendor {invoice.vendor_id} is {invoice.vendor_status}; "
+                "no invoice from this vendor may be paid until the hold is lifted",
+            )
+        )
 
     problems.extend(_check_document_arithmetic(invoice, policy))
 
@@ -443,6 +456,17 @@ def three_way_match(
         skipped.append(
             f"price and quantity matching: {invoice.currency} and {po.currency} are "
             "not comparable without a rate, and this system does not invent one"
+        )
+        return _outcome(problems, pairs, skipped, policy)
+
+    if not invoice.lines:
+        # No lines means no price check and no quantity check. Silence here
+        # would be indistinguishable from a clean three-way match, which is the
+        # worst available outcome: an invoice that was never really compared,
+        # reported as compared and found fine.
+        skipped.append(
+            "price and quantity matching: the extraction carried no line items, "
+            "so nothing was compared against the order"
         )
         return _outcome(problems, pairs, skipped, policy)
 

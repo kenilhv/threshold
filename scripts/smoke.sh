@@ -58,6 +58,10 @@ check "audit_event rejects UPDATE" "blocked" \
       do \$\$ begin update audit_event set action='tampered' where action='smoke.test'; raise notice 'ALLOWED'; exception when others then raise notice 'blocked'; end \$\$;" 2>&1 \
      | grep -o 'blocked' | head -1)"
 
+check "seed loaded 5 purchase orders" "5" \
+  "$(docker compose exec -T postgres psql -U threshold -d threshold -tAc 'select count(*) from purchase_order' | tr -d '\r' | head -1)"
+
+
 check "pgvector extension present" "vector" \
   "$(docker compose exec -T postgres psql -U threshold -d threshold -tAc \
      "select extname from pg_extension where extname='vector'")"
@@ -135,9 +139,40 @@ if [[ -s "$FIXTURE" ]]; then
     "$(docker compose exec -T postgres psql -U threshold -d threshold -tAc \
        "select count(*) from job where state='claimed' and lease_expires_at < now()" | tr -d '\r' | head -1)"
 
-  check "this document's job reached a terminal state" "1" \
+  # Two jobs now, not one: extraction enqueues the match in its own transaction.
+  # This counting 1 again would mean the chain broke.
+  check "both of this document's jobs reached a terminal state" "2" \
     "$(docker compose exec -T postgres psql -U threshold -d threshold -tAc \
        "select count(*) from job where payload->>'document_id' = '$DOC_ID' and state in ('succeeded','dead')" | tr -d '\r' | head -1)"
+
+  # --- the decision layer -------------------------------------------------
+  # Extraction finishing is no longer the end of the pipeline. The seeded order
+  # PO-44718 is the one this fixture cites, and its lines carry the same SKUs
+  # and the same agreed price, so a clean fixture must come out auto_approve.
+  # If this ever reads needs_review, either the extractor stopped reading line
+  # items or the seed and the fixture have drifted apart.
+  DECISION=""
+  for _ in $(seq 1 40); do
+    DECISION="$(curl -s --max-time 15 "$API/v1/documents/$DOC_ID/match" \
+      | python -c 'import json,sys; print(json.load(sys.stdin).get("disposition") or "")' 2>/dev/null)"
+    [[ -n "$DECISION" ]] && break
+    sleep 0.5
+  done
+  check "the invoice was matched against its purchase order" "auto_approve" "$DECISION"
+
+  MATCH="$(curl -s --max-time 15 "$API/v1/documents/$DOC_ID/match")"
+
+  check "all three line items paired with the order" "3" \
+    "$(printf '%s' "$MATCH" | python -c 'import json,sys; print(len(json.load(sys.stdin)["line_pairs"]))' 2>/dev/null)"
+
+  # A clean result only means something if every check actually ran. An absent
+  # check and a passing check look identical from the outside.
+  check "no check was skipped on the clean path" "0" \
+    "$(printf '%s' "$MATCH" | python -c 'import json,sys; print(len(json.load(sys.stdin)["skipped_checks"]))' 2>/dev/null)"
+
+  check "the decision names the policy it applied" "2026.09.1" \
+    "$(printf '%s' "$MATCH" | python -c 'import json,sys; print(json.load(sys.stdin)["policy_version"])' 2>/dev/null)"
+
 
 
 else

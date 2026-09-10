@@ -120,3 +120,7 @@ smoke: ## Prove the running stack is healthy end to end
 .PHONY: demo-crash
 demo-crash: ## SIGKILL a worker mid-job and watch the work survive
 	@bash scripts/demo_crash_recovery.sh
+
+.PHONY: demo-match
+demo-match: ## Three invoices, three decisions, and the reason for each
+	@python scripts/demo_three_way_match.py

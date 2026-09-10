@@ -62,6 +62,7 @@ def invoice(
     currency: str = "USD",
     confidence: str = "0.97",
     vendor_id: uuid.UUID | None = VENDOR,
+    vendor_status: str | None = "active",
     po_number: str | None = "PO-1001",
     duplicate_of: uuid.UUID | None = None,
     bank_changed: bool = False,
@@ -75,6 +76,7 @@ def invoice(
         lines=lines if lines is not None else (inv_line(),),
         lowest_field_confidence=D(confidence),
         vendor_id=vendor_id,
+        vendor_status=vendor_status,
         po_number=po_number,
         duplicate_of_document_id=duplicate_of,
         bank_details_changed=bank_changed,
@@ -267,6 +269,22 @@ CASES: tuple[Case, ...] = (
         disposition=Disposition.BLOCKED,
     ),
     Case(
+        # The seeded Pinewood vendor exists for this: every invoice from a
+        # held vendor stops however clean it looks.
+        name="the vendor is on hold",
+        invoice=invoice(vendor_status="on_hold"),
+        po=order(),
+        codes={ExceptionCode.VENDOR_ON_HOLD},
+        disposition=Disposition.BLOCKED,
+    ),
+    Case(
+        name="an unresolved vendor does not also report a hold",
+        invoice=invoice(vendor_id=None, vendor_status=None),
+        po=order(),
+        codes={ExceptionCode.VENDOR_UNKNOWN},
+        disposition=Disposition.BLOCKED,
+    ),
+    Case(
         name="the invoice is from a different vendor than the order",
         invoice=invoice(vendor_id=OTHER_VENDOR),
         po=order(),
@@ -425,3 +443,17 @@ def test_line_pairs_are_recorded() -> None:
         order(lines=(po_line(number=1), po_line(number=2, sku="SKU-2", description="Bracket"))),
     )
     assert outcome.line_pairs == ((1, 1), (2, 2))
+
+
+def test_an_invoice_with_no_line_items_records_that_nothing_was_compared() -> None:
+    """The dangerous silence.
+
+    Before line-item extraction existed the matcher received zero lines and
+    reported a clean match, because there was nothing to disagree with. An
+    invoice that was never compared must not read the same as one that was
+    compared and passed.
+    """
+    outcome = three_way_match(invoice(lines=()), order())
+    assert not outcome.exceptions
+    assert outcome.skipped_checks
+    assert "no line items" in outcome.skipped_checks[0]

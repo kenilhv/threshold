@@ -85,6 +85,7 @@ class ExceptionCode(StrEnum):
     PO_NOT_FOUND = "po_not_found"
     PO_CLOSED = "po_closed"
     VENDOR_UNKNOWN = "vendor_unknown"
+    VENDOR_ON_HOLD = "vendor_on_hold"
     VENDOR_MISMATCH = "vendor_mismatch"
     CURRENCY_MISMATCH = "currency_mismatch"
     DUPLICATE_SUSPECTED = "duplicate_suspected"
@@ -153,6 +154,16 @@ TAXONOMY: Final[dict[ExceptionCode, ExceptionSpec]] = {
         owner=OwnerRole.AP_CLERK,
         sla_hours=24,
         summary="The billing party could not be resolved to a known vendor.",
+    ),
+    ExceptionCode.VENDOR_ON_HOLD: ExceptionSpec(
+        code=ExceptionCode.VENDOR_ON_HOLD,
+        severity=Severity.BLOCK,
+        owner=OwnerRole.AP_CLERK,
+        # A week, not a day. A hold is a deliberate business state rather than
+        # an error, so the clock measures how long nobody revisited the
+        # decision -- not how long somebody has to fix a mistake.
+        sla_hours=168,
+        summary="The vendor is on hold, so no invoice from them may be paid however clean it is.",
     ),
     ExceptionCode.VENDOR_MISMATCH: ExceptionSpec(
         code=ExceptionCode.VENDOR_MISMATCH,

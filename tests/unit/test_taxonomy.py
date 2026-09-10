@@ -20,6 +20,7 @@ FROZEN_CODES = {
     "po_not_found",
     "po_closed",
     "vendor_unknown",
+    "vendor_on_hold",
     "vendor_mismatch",
     "currency_mismatch",
     "duplicate_suspected",

@@ -16,15 +16,25 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from threshold.adapters.db import dispose_engine, init_engine, session_scope
 from threshold.config.settings import get_settings
-from threshold.domain.models import Vendor, VendorBankAccount
+from threshold.domain.models import (
+    GoodsReceipt,
+    GoodsReceiptLine,
+    PurchaseOrder,
+    PurchaseOrderLine,
+    Vendor,
+    VendorBankAccount,
+)
 from threshold.observability.logging import configure_logging
 
 log = structlog.get_logger(__name__)
@@ -134,6 +144,208 @@ BANK_HISTORY: list[dict[str, object]] = [
 ]
 
 
+# --------------------------------------------------- orders and receipts ---
+#
+# PO-44718 is not arbitrary. It is the purchase order number the golden invoice
+# fixture prints, and its lines carry the SKUs and the agreed price that fixture
+# bills against, so `make smoke` exercises a real three-way match end to end
+# rather than a match against nothing. Change one and the other has to move.
+#
+# The other two orders exist so the exception paths are demonstrable without
+# hand-crafting a database: PO-44801 is agreed below what the demo bills, and
+# PO-44802 has been ordered and never received.
+
+PURCHASE_ORDERS: list[dict[str, object]] = [
+    {
+        "po_number": "PO-44718",
+        "vendor_number": "V-100418",
+        "currency": "EUR",
+        "status": "open",
+        "buyer_email": "r.okafor@threshold.example",
+        "days_ago": 45,
+        "lines": [
+            # Quantity and price match the fixture exactly, and every line is
+            # fully received, so the golden invoice matches clean.
+            {
+                "sku": "NG-0O10l",
+                "description": "Hex bolt M8x40 zinc plated, DIN 933, boxed 100",
+                "quantity_ordered": "12",
+                "unit_price": "18.4000",
+                "received": "12",
+            },
+            {
+                "sku": "NG-0O11l",
+                "description": "Hex bolt M8x41 zinc plated, DIN 933, boxed 100",
+                "quantity_ordered": "12",
+                "unit_price": "18.4000",
+                "received": "12",
+            },
+            {
+                "sku": "NG-0O12l",
+                "description": "Hex bolt M8x42 zinc plated, DIN 933, boxed 100",
+                "quantity_ordered": "12",
+                "unit_price": "18.4000",
+                "received": "12",
+            },
+        ],
+    },
+    {
+        # Ordered from the same vendor and in the same currency as PO-44718, so
+        # billing against it produces RECEIPT_MISSING and nothing else. An
+        # exception demo that also trips a vendor or currency mismatch does not
+        # show which rule fired.
+        "po_number": "PO-44730",
+        "vendor_number": "V-100418",
+        "currency": "EUR",
+        "status": "open",
+        "buyer_email": "r.okafor@threshold.example",
+        "days_ago": 4,
+        "lines": [
+            {
+                "sku": "NG-4420k",
+                "description": "Anchor bolt M12x120 hot-dip galvanised, boxed 25",
+                "quantity_ordered": "8",
+                "unit_price": "31.5000",
+                "received": "0",
+            },
+        ],
+    },
+    {
+        "po_number": "PO-44801",
+        "vendor_number": "V-100592",
+        "currency": "EUR",
+        "status": "open",
+        "buyer_email": "r.okafor@threshold.example",
+        "days_ago": 30,
+        "lines": [
+            # Delivered in two drops, which is the normal case and the reason
+            # receipts are summed rather than compared one at a time.
+            {
+                "sku": "BF-2201",
+                "description": "Threaded rod M10, 1m, A2 stainless",
+                "quantity_ordered": "40",
+                "unit_price": "7.2500",
+                "received": "40",
+            },
+        ],
+    },
+    {
+        "po_number": "PO-44802",
+        "vendor_number": "V-100733",
+        "currency": "GBP",
+        "status": "open",
+        "buyer_email": "s.mistry@threshold.example",
+        "days_ago": 6,
+        "lines": [
+            # Ordered, nothing received. Billing against this is RECEIPT_MISSING
+            # and belongs to receiving, not to the buyer.
+            {
+                "sku": "HF-0090",
+                "description": "Quarterly HVAC service visit",
+                "quantity_ordered": "1",
+                "unit_price": "1450.0000",
+                "received": "0",
+            },
+        ],
+    },
+    {
+        "po_number": "PO-44655",
+        "vendor_number": "V-100418",
+        "currency": "EUR",
+        "status": "closed",
+        "buyer_email": "r.okafor@threshold.example",
+        "days_ago": 120,
+        "lines": [
+            {
+                "sku": "NG-0O10l",
+                "description": "Hex bolt M8x40 zinc plated, DIN 933, boxed 100",
+                "quantity_ordered": "5",
+                "unit_price": "18.4000",
+                "received": "5",
+            },
+        ],
+    },
+]
+
+
+async def _seed_orders(session: AsyncSession, vendor_ids: dict[str, uuid.UUID]) -> None:
+    """Purchase orders, their lines, and the receipts against them.
+
+    Idempotent the same way the vendors are: ``po_number`` and
+    ``receipt_number`` are unique, so a second run conflicts and does nothing
+    rather than growing the table. Line rows are only inserted when the order
+    was newly created, because a line has no natural key of its own beyond its
+    order and number -- which is exactly what the unique constraint on
+    (purchase_order_id, line_number) enforces.
+    """
+    for spec in PURCHASE_ORDERS:
+        vendor_id = vendor_ids[str(spec["vendor_number"])]
+        po_number = str(spec["po_number"])
+        ordered_at = SEED_EPOCH - timedelta(days=int(spec["days_ago"]))  # type: ignore[arg-type]
+
+        order_id = (
+            await session.execute(
+                insert(PurchaseOrder)
+                .values(
+                    po_number=po_number,
+                    vendor_id=vendor_id,
+                    currency=str(spec["currency"]),
+                    status=str(spec["status"]),
+                    buyer_email=str(spec["buyer_email"]),
+                    ordered_at=ordered_at,
+                )
+                .on_conflict_do_nothing(index_elements=[PurchaseOrder.po_number])
+                .returning(PurchaseOrder.id)
+            )
+        ).scalar_one_or_none()
+
+        if order_id is None:
+            continue  # already seeded
+
+        lines = spec["lines"]
+        assert isinstance(lines, list)
+        for number, line in enumerate(lines, start=1):
+            line_id = (
+                await session.execute(
+                    insert(PurchaseOrderLine)
+                    .values(
+                        purchase_order_id=order_id,
+                        line_number=number,
+                        sku=str(line["sku"]),
+                        description=str(line["description"]),
+                        quantity_ordered=Decimal(str(line["quantity_ordered"])),
+                        unit_price=Decimal(str(line["unit_price"])),
+                    )
+                    .returning(PurchaseOrderLine.id)
+                )
+            ).scalar_one()
+
+            received = Decimal(str(line["received"]))
+            if received <= 0:
+                continue
+
+            receipt_id = (
+                await session.execute(
+                    insert(GoodsReceipt)
+                    .values(
+                        receipt_number=f"GR-{po_number}-{number}",
+                        purchase_order_id=order_id,
+                        received_at=ordered_at + timedelta(days=3),
+                        received_by="dock@threshold.example",
+                    )
+                    .returning(GoodsReceipt.id)
+                )
+            ).scalar_one()
+
+            await session.execute(
+                insert(GoodsReceiptLine).values(
+                    goods_receipt_id=receipt_id,
+                    purchase_order_line_id=line_id,
+                    quantity_received=received,
+                )
+            )
+
+
 async def seed() -> None:
     settings = get_settings()
     configure_logging(settings)
@@ -183,10 +395,13 @@ async def seed() -> None:
                 )
                 await session.execute(stmt_bank)
 
+            await _seed_orders(session, vendor_ids)
+
         log.info(
             "seed.complete",
             vendors=len(VENDORS),
             bank_account_versions=len(BANK_HISTORY),
+            purchase_orders=len(PURCHASE_ORDERS),
         )
     finally:
         await dispose_engine()

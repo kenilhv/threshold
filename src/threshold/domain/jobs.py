@@ -37,6 +37,7 @@ class JobState(StrEnum):
 
 class JobKind(StrEnum):
     EXTRACT_DOCUMENT = "extract_document"
+    MATCH_INVOICE = "match_invoice"
 
 
 #: How long a claim is good for. A worker must finish or heartbeat within this,

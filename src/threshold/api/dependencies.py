@@ -15,6 +15,7 @@ from threshold.adapters.object_store import ObjectStore, S3ObjectStore
 from threshold.adapters.queue import PostgresJobQueue, Queue
 from threshold.config.settings import get_settings
 from threshold.services.ingest import IngestService
+from threshold.services.matching import MatchingService
 
 
 @lru_cache
@@ -38,3 +39,7 @@ def get_queue() -> Queue:
 @lru_cache
 def get_ingest_service() -> IngestService:
     return IngestService(store=get_object_store(), extractor=get_extractor(), queue=get_queue())
+
+
+def get_matching_service() -> MatchingService:
+    return MatchingService()

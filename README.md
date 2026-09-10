@@ -7,11 +7,12 @@ The name is the argument. The system's entire job is to hold a defensible line
 between what a machine may execute alone and what a human must decide, and to
 show where that line is and why it sits there.
 
-> **Status: M2.** The stack runs, a PDF ingests, and the extraction happens on
-> a worker pulling from a durable queue rather than on the request thread. Kill
-> the worker mid-job and the work survives — `make demo-crash` shows it. The
-> milestones below are honest about what does not exist yet. Every claim in this
-> README is checkable against the repository today.
+> **Status: M3.** A PDF ingests, a worker extracts it, and a second worker
+> matches it against its purchase order and the goods received — producing a
+> disposition, the exceptions behind it, and whose desk each one lands on.
+> `make demo-match` submits three invoices and approves one, blocks one and
+> sends one for review. The milestones below are honest about what does not
+> exist yet. Every claim in this README is checkable against the repository.
 
 ---
 
@@ -42,6 +43,12 @@ Nineteen checks, none of which trust `docker compose ps`: the audit trigger is
 asked to allow an UPDATE and must refuse, a real PDF is ingested twice and must
 produce one document, and the queue is inspected for jobs holding an expired
 lease.
+
+To see the decision layer make three different calls on three invoices:
+
+```bash
+make demo-match
+```
 
 To watch the durability claim hold under an actual crash:
 
@@ -125,7 +132,16 @@ Full reasoning, including what is deliberately *not* distributed and why:
       four workers against forty jobs and asserts each was claimed exactly once;
       `make demo-crash` kills a worker holding a lease and shows the work
       return.
-- [ ] M3 — three-way match, the frozen exception taxonomy, owner routing
+- [x] **M3 — the decision layer.** Three-way match between invoice, purchase
+      order and goods received, at line level, as pure functions with a
+      table-driven test per case. A frozen exception taxonomy whose distinctions
+      come from SAP's tolerance keys rather than from first principles — notably
+      that billed-before-receipt is a different problem from over-billing, with
+      a different owner. Every exception carries a category, an owner and a
+      deadline, all written onto the row rather than re-derived later.
+      Tolerances are a floor, a percentage and a ceiling, versioned as a set and
+      stamped on every decision. Checks that could not run honestly are recorded
+      as skipped rather than passing silently.
 - [ ] M4 — the operator console
 - [ ] M5 — OpenTelemetry end to end, dashboards, alert rules, runbooks
 - [ ] M6 — evaluation harness, calibration curve, CI regression gate
