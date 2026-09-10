@@ -13,7 +13,7 @@ import pytest
 
 from threshold.domain.classification import Sensitivity, classify, sensitivity_of
 from threshold.domain.models import (
-    AuditEvent,
+    Base,
     MoneyExample,
     Vendor,
     VendorBankAccount,
@@ -85,12 +85,23 @@ class TestFieldClassification:
         is a column somebody forgot, and it will be wrong in one direction or
         the other. Require the declaration.
         """
+        # Every mapped table, not a hand-written list. A named tuple of models
+        # guards the models somebody remembered to add to it, which is the
+        # opposite of what this test is for: the column at risk is the one on
+        # the table added last.
         unclassified: list[str] = []
-        for model in (Vendor, VendorBankAccount, AuditEvent, MoneyExample):
-            for column in model.__table__.columns:
+        for table in Base.metadata.sorted_tables:
+            for column in table.columns:
                 if "sensitivity" not in (column.info or {}):
-                    unclassified.append(f"{model.__tablename__}.{column.name}")
+                    unclassified.append(f"{table.name}.{column.name}")
         assert not unclassified, f"columns missing a sensitivity declaration: {unclassified}"
+
+    def test_the_guard_covers_every_table_rather_than_a_remembered_few(self) -> None:
+        """The guard above is only as good as its reach, so state the reach."""
+        covered = {table.name for table in Base.metadata.sorted_tables}
+        assert len(covered) >= 12, f"only {len(covered)} tables discovered: {sorted(covered)}"
+        for expected in ("match_result", "match_exception", "purchase_order", "job"):
+            assert expected in covered, f"{expected} is mapped but not reached by the guard"
 
     def test_classify_helper_round_trips(self) -> None:
         assert classify(Sensitivity.INTERNAL) == {"sensitivity": Sensitivity.INTERNAL}

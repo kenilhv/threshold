@@ -14,11 +14,18 @@ import dataclasses
 import time
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
+from sqlalchemy import select
+from sqlalchemy import text as sa_text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from tests.unit.test_fixture_layouts import build_spec, render
+
+from threshold.api.idempotency import remember
+from threshold.domain.models import Document, IdempotencyKey
 
 BASE_URL = "http://localhost:8000"
 
@@ -231,3 +238,69 @@ class TestObservability:
         assert "/v1/documents" in spec["paths"]
         post = spec["paths"]["/v1/documents"]["post"]
         assert {"200", "409", "413", "415", "422"} <= set(post["responses"])
+
+
+class TestIdempotencyDoesNotCostTheCallerItsWork:
+    """Losing a race for an Idempotency-Key must cost only the key.
+
+    `remember()` used to call `session.rollback()` when a concurrent request
+    had already claimed the key. That rolls back the *caller's* transaction --
+    the document row, its audit event and the job enqueued alongside them --
+    while the endpoint went on to return 202 naming a document_id that no
+    longer existed. A savepoint scopes the loss to the insert that actually
+    lost.
+    """
+
+    async def test_a_concurrent_duplicate_key_does_not_discard_the_document(self) -> None:
+        engine = create_async_engine(
+            "postgresql+asyncpg://threshold:threshold@localhost:5432/threshold"
+        )
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(sa_text("SELECT 1"))
+        except Exception:
+            await engine.dispose()
+            pytest.skip("Postgres is not reachable; start the stack with `make up`")
+
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        key = f"race-{uuid.uuid4().hex[:12]}"
+
+        # Someone else claimed the key and committed.
+        async with sessions() as session:
+            session.add(
+                IdempotencyKey(
+                    key=key,
+                    request_fingerprint="fp",
+                    response_status=202,
+                    response_body={},
+                    expires_at=datetime.now(UTC) + timedelta(days=1),
+                )
+            )
+            await session.commit()
+
+        # The loser has already done real work in its own transaction.
+        async with sessions() as session:
+            digest = uuid.uuid4().hex * 2
+            session.add(
+                Document(
+                    content_sha256=digest,
+                    storage_key=f"documents/{digest[:2]}/{digest[2:4]}/{digest}.pdf",
+                    original_filename="race.pdf",
+                    content_type="application/pdf",
+                    byte_size=10,
+                    source="fixture",
+                )
+            )
+            await session.flush()
+
+            await remember(session, key, "fp", 202, {})
+
+            surviving = (
+                await session.execute(select(Document.id).where(Document.content_sha256 == digest))
+            ).all()
+            await session.rollback()
+
+        await engine.dispose()
+        assert len(surviving) == 1, (
+            "the caller's document was discarded; a 202 would name a row that does not exist"
+        )

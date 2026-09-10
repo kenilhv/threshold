@@ -173,7 +173,7 @@ failed the first time they ran. `TAX_VARIANCE` was in the taxonomy with nothing
 able to raise it, because checking tax needs per-jurisdiction rates this system
 does not have — so it was removed rather than left looking covered.
 
-`make demo-match` submits three real invoices and prints what happened to each.
+`make demo-match` submits four real invoices and prints what happened to each.
 
 ---
 

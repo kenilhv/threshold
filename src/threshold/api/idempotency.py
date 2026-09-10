@@ -110,6 +110,9 @@ async def remember(
     this write. The unique constraint catches it; the loser treats it as a
     successful replay rather than an error, because both requests did the same
     work and the caller cannot tell — and should not care — which one won.
+
+    Losing that race must not cost the loser its work, which is why the insert
+    is wrapped in a savepoint. See the comment below.
     """
     now = datetime.now(UTC)
     record = IdempotencyKey(
@@ -119,9 +122,13 @@ async def remember(
         response_body=body,
         expires_at=now + RETENTION,
     )
-    session.add(record)
+    # A SAVEPOINT, not a bare flush. `session.rollback()` here would roll back
+    # the *caller's* transaction -- the document row, the audit event and the
+    # enqueued job -- while the endpoint went on to return 202 naming a
+    # document_id that no longer exists. The loser of a race must lose only its
+    # own insert.
     try:
-        await session.flush()
+        async with session.begin_nested():
+            session.add(record)
     except IntegrityError:
-        await session.rollback()
         log.info("idempotency.concurrent_duplicate", key=key)

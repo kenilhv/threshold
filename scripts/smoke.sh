@@ -9,8 +9,14 @@ set -euo pipefail
 API="${API:-http://localhost:8000}"
 fail=0
 
+# Counted rather than asserted in prose. A number written into the README
+# drifts the first time a check is added, and a stale count in documentation
+# is the same class of defect this script exists to catch.
+checks=0
+
 check() {
   local name="$1" expected="$2" actual="$3"
+  checks=$((checks + 1))
   if [[ "$actual" == "$expected" ]]; then
     printf '  \033[32mPASS\033[0m  %-42s %s\n' "$name" "$actual"
   else
@@ -182,7 +188,9 @@ rm -f "$FIXTURE"
 
 echo
 if [[ $fail -eq 0 ]]; then
-  printf '\033[32mAll checks passed.\033[0m\n\n'
+  printf '[32mAll %d checks passed.[0m
+
+' "$checks"
 else
   printf '\033[31mSmoke test failed.\033[0m\n\n'
   exit 1

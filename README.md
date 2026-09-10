@@ -40,7 +40,7 @@ Then prove it actually works rather than merely started:
 make smoke
 ```
 
-Nineteen checks, none of which trust `docker compose ps`: the audit trigger is
+It trusts nothing `docker compose ps` says, and prints its own check count: the audit trigger is
 asked to allow an UPDATE and must refuse, a real PDF is ingested twice and must
 produce one document, and the queue is inspected for jobs holding an expired
 lease.
@@ -78,8 +78,8 @@ services.
 
 An invoice arrives, is extracted by a model that reports per-field confidence,
 is matched against its purchase order and goods receipt by **deterministic
-rules**, and is either auto-approved under an explicit delegation limit or
-turned into **one typed exception with a named owner** who reviews it.
+rules**, and is either cleared with no exceptions raised or turned into
+**typed exceptions, each with a named owner and a deadline**, for review.
 
 Three decisions carry most of the weight, and each is a boundary rather than a
 feature:

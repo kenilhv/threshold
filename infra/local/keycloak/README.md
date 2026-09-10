@@ -16,10 +16,29 @@ the same model:
 
 | Role | Owns |
 |---|---|
-| `ap_clerk` | Routine exception review. Cannot approve above the delegation limit. |
+| `ap_clerk` | Routine exception review: document arithmetic, duplicates, unresolved vendors. |
 | `buyer` | Price and quantity variances against the purchase order they raised. |
-| `controller` | Vendor banking changes and anything above the delegation limit. |
+| `controller` | Financial control. Owns no exception class in the shipped taxonomy. |
 | `auditor` | Read-only across every projection, including the audit trail. |
+
+> **This realm has drifted from the domain, and nothing yet consumes it.**
+>
+> `domain/taxonomy.py` routes exceptions to four owners — `ap_clerk`, `buyer`,
+> `receiving` and `treasury` — and two of those are not realm roles at all. A
+> vendor banking change routes to `treasury`, not to `controller`, which the
+> table above used to claim. No seeded user holds `buyer`. The realm defines no
+> protocol mappers, so role delivery rests on a Keycloak default and the access
+> token's audience is `account` rather than `threshold-api`.
+>
+> None of this has bitten, because **no endpoint is authenticated yet**: the
+> API reads `oidc_issuer` from settings and uses it nowhere. That is the gap
+> M4 closes, and closing it means reconciling this file with the taxonomy
+> rather than the other way round — renaming an `OwnerRole` would rewrite the
+> owner stamped on every exception already stored.
+>
+> An earlier version of this table also described a delegation limit. No such
+> limit exists anywhere in the code, so the sentence has been removed rather
+> than left as a specification nobody wrote.
 
 A vendor banking change routing to `controller` rather than to whoever is on
 shift is the control that matters most here: it is the shape almost every real

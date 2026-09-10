@@ -1,0 +1,73 @@
+# The gate the Makefile has claimed since M0.
+#
+# `make verify` has carried the comment "What CI runs on every commit" since the
+# first commit, and until now nothing ran it. Five places in the documentation
+# described CI as a thing that exists. This is the smallest change that makes
+# those sentences true, and it belongs in the same repository as the claim.
+#
+# Deliberately not the whole suite. Integration tests need Postgres, MinIO,
+# Redis and Keycloak, and the honest split is already drawn in the Makefile:
+# `make verify` is lint plus the tests that need no stack, and it is what a
+# contributor can run locally before pushing. Standing the full compose stack up
+# in CI is worth doing when there is something CI would catch that a developer
+# running `make up` would not.
+
+name: verify
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A second push to the same branch cancels the first: the older run's verdict
+  # is about code nobody will merge.
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Pinned to the version the Dockerfile builds on and the version
+          # pyproject declares, so a passing gate means the same interpreter
+          # that runs in the container.
+          python-version: "3.12"
+          cache: pip
+
+      # [dev,fixtures], not [dev]. `make test` runs tests/unit, which includes
+      # test_fixture_layouts.py, which renders real PDFs through reportlab --
+      # and reportlab is in the fixtures extra because the service reads
+      # documents and never writes them. Installing only [dev] makes the gate
+      # this repository documents fail on a clean checkout.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,fixtures]"
+
+      - name: make verify
+        run: make verify
+
+      # Separate step so a formatting failure and a type failure are
+      # distinguishable at a glance in the checks list, rather than both
+      # reading as "make verify failed".
+      - name: mypy --strict over the seed generators
+        run: python -m mypy --strict seeds/
+
+      - name: Migrations are reversible in isolation
+        # Not the database round trip -- that needs Postgres. This asserts the
+        # weaker property CI can check without a stack: every revision file
+        # imports, the revision graph is linear and single-headed, and every
+        # upgrade has a downgrade. A branched history is the failure that turns
+        # a deploy into an outage, and it is invisible until someone deploys.
+        run: python scripts/check_migration_graph.py
