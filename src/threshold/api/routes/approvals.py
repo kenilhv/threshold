@@ -13,10 +13,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from threshold.adapters.db import get_session
 from threshold.api.auth import Principal, require_principal
+from threshold.api.dependencies import SessionDep
 from threshold.domain.approval import Decision, authorise
 from threshold.domain.models import ApprovalDecision, MatchException, MatchResult
 from threshold.services.approvals import (
@@ -84,7 +83,7 @@ class DecisionView(BaseModel):
 )
 async def get_queue(
     principal: Annotated[Principal, Depends(require_principal)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session: SessionDep,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     mine: Annotated[bool, Query(description="Only invoices this principal may decide.")] = False,
 ) -> list[QueueItem]:
@@ -177,7 +176,7 @@ async def decide(
     match_result_id: uuid.UUID,
     body: DecisionBody,
     principal: Annotated[Principal, Depends(require_principal)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session: SessionDep,
 ) -> DecisionView:
     try:
         decision = await ApprovalService().decide(
@@ -239,7 +238,7 @@ async def decide(
 async def get_decisions(
     document_id: uuid.UUID,
     principal: Annotated[Principal, Depends(require_principal)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session: SessionDep,
 ) -> list[DecisionView]:
     """Append-only, so this is the whole history and not the current state."""
     rows = (

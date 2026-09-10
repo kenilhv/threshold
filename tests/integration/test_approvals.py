@@ -330,3 +330,44 @@ class TestTheTrailIsAppendOnly:
     def _item(client: httpx.Client, document_id: str) -> dict:  # type: ignore[type-arg]
         queue = client.get(f"{API}/v1/queue", headers=auth(client, "buyer")).json()
         return next(i for i in queue if i["document_id"] == document_id)
+
+
+class TestTheResponseFollowsTheCommit:
+    """A 201 means the row exists, now, for anyone who asks.
+
+    Regression test for a measured defect. `get_session` commits in its exit
+    code, and a `yield` dependency defaults to request scope, which runs that
+    exit code after the response is sent. Approving and reading back in the same
+    breath came back empty in 6 of 8 trials. The console redirects to the
+    invoice straight after a decision, so it could render a just-approved invoice
+    as undecided — form and all — and invite a second decision.
+
+    The quieter failure was worse: a commit that failed after the response had
+    gone left the client holding a 201 for a decision that was never recorded.
+    """
+
+    def test_a_decision_is_readable_the_moment_it_is_acknowledged(
+        self, client: httpx.Client
+    ) -> None:
+        trials = 6
+        unreadable = 0
+        for _ in range(trials):
+            document_id = submit(client, over_billed=True)
+            match = match_of(client, document_id)
+            response = decide(
+                client,
+                "buyer",
+                str(match["match_result_id"]),
+                seen_version=int(match["version"]),  # type: ignore[arg-type]
+            )
+            assert response.status_code == 201, response.text
+
+            # No sleep. That is the entire point.
+            history = client.get(
+                f"{API}/v1/documents/{document_id}/decisions", headers=auth(client, "buyer")
+            ).json()
+            unreadable += not any(d["decision"] == "approved" for d in history)
+
+        assert unreadable == 0, (
+            f"{unreadable}/{trials} acknowledged decisions were not yet readable"
+        )

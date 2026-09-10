@@ -8,7 +8,12 @@ against an in-memory store and a hermetic extractor.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Annotated
 
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from threshold.adapters.db import get_session
 from threshold.adapters.extraction.deterministic import DeterministicExtractor
 from threshold.adapters.extraction.port import Extractor
 from threshold.adapters.object_store import ObjectStore, S3ObjectStore
@@ -43,3 +48,20 @@ def get_ingest_service() -> IngestService:
 
 def get_matching_service() -> MatchingService:
     return MatchingService()
+
+
+#: The request's database session. Use this, never ``Depends(get_session)``.
+#:
+#: ``scope="function"`` is load-bearing. A ``yield`` dependency defaults to
+#: request scope, which runs its exit code -- here, the COMMIT -- after the
+#: response has already been sent. Measured against this API before the fix:
+#: 6 of 8 approvals returned 201 for a row that a read issued immediately
+#: afterwards could not see. Worse than a stale read, it meant a commit that
+#: failed at commit time (a constraint, a dropped connection) still left the
+#: client holding a 201 for a decision that was never recorded.
+#:
+#: Function scope commits when the route returns and before the response is
+#: written, so a failed commit becomes a 500 and a success is readable the
+#: instant the client has it. ``test_session_scope.py`` walks every route and
+#: fails if any of them takes a session any other way.
+SessionDep = Annotated[AsyncSession, Depends(get_session, scope="function")]

@@ -25,12 +25,10 @@ import structlog
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from threshold.adapters.db import get_session
 from threshold.adapters.extraction.port import ExtractionError
 from threshold.api import idempotency
-from threshold.api.dependencies import get_ingest_service
+from threshold.api.dependencies import SessionDep, get_ingest_service
 from threshold.domain.classification import Sensitivity
 from threshold.domain.extraction import redacted_fields
 from threshold.domain.models import (
@@ -164,7 +162,7 @@ class MatchView(BaseModel):
 async def submit_document(
     response: Response,
     file: Annotated[UploadFile, File(description="The invoice document.")],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session: SessionDep,
     service: Annotated[IngestService, Depends(get_ingest_service)],
     idempotency_key: Annotated[
         str | None,
@@ -243,7 +241,7 @@ async def submit_document(
 )
 async def get_document(
     document_id: uuid.UUID,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session: SessionDep,
 ) -> DocumentDetail:
     document = (
         await session.execute(select(Document).where(Document.id == document_id))
@@ -289,7 +287,7 @@ async def get_document(
 )
 async def get_match(
     document_id: uuid.UUID,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session: SessionDep,
 ) -> MatchView:
     """The latest version only.
 

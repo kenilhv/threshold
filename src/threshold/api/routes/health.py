@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from threshold.adapters.db import get_session
+from threshold.api.dependencies import SessionDep
 from threshold.config.settings import Settings, get_settings
 
 router = APIRouter(tags=["health"])
@@ -72,7 +72,7 @@ async def _check_redis(settings: Settings) -> DependencyStatus:
 @router.get("/readyz", response_model=Readiness)
 async def readiness(
     response: Response,
-    session: AsyncSession = Depends(get_session),
+    session: SessionDep,
     settings: Settings = Depends(get_settings),
 ) -> Readiness:
     checks = await asyncio.gather(_check_database(session), _check_redis(settings))
