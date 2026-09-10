@@ -5,6 +5,172 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-019 — The queue trusted the worker's clock
+
+**Date:** 2026-09-10 · **Status:** accepted · **Fixed**
+
+`models.py` has said since M0 that timestamps "are set by the database, not the
+app, so two workers on skewed clocks cannot disagree about ordering." The queue
+did not honour it. `claim()` computed `lease_expires_at` from the worker's own
+clock, `fail()` computed the retry `run_after` the same way, and both were then
+compared against the database's `now()` — in the claim predicate and in the
+reaper. Every lease was only as good as the agreement between two clocks.
+
+That agreement is not something to assume on this stack. The Docker VM had just
+come back from the host sleeping, and WSL2 clocks are known to drift after
+resume. A worker running a few minutes behind would write leases that were
+already expired as far as the database was concerned; the reaper would return
+live jobs to `pending` and a second worker would run them. That is double
+processing, in a system whose next milestone moves money.
+
+It surfaced as a test that passed alone and failed in the full run.
+`test_attempts_are_exhausted_then_dead_lettered` wrote the host's `now()` into
+`run_after` and claimed in the same transaction, where Postgres's `now()` is the
+transaction start — so it passed or failed on sub-millisecond skew, depending on
+load. The measured skew at the time was about a millisecond. Fixing the test
+alone would have made the gate green and left production with the same defect,
+so the fix is in the queue: every timestamp it writes and later compares —
+`claimed_at`, `lease_expires_at` on claim and heartbeat, the retry `run_after`,
+`replayed_at`, the purge cutoff — now comes from `func.now()`. The module has no
+client-clock timestamps left. `fail()` returns the stored retry time rather than
+logging its own estimate of it.
+
+`TestClockSkew` pins it by making the queue module's clock run ten minutes slow.
+With the old code the reaper takes the live job; verified by reverting the one
+line and watching it fail. With the fix the lease holds, and a retry cannot be
+scheduled into the past.
+
+The general point is the same one D-015 made about stored values: a guarantee
+written in a docstring is not a guarantee until something breaks when it is
+violated.
+
+---
+
+## D-018 — The API answered before it committed
+
+**Date:** 2026-09-10 · **Status:** accepted · **Fixed**
+
+Found while checking the console, not while writing the API, which is the
+uncomfortable part. Approving an invoice and reading its decisions back in the
+same breath came back empty in **6 of 8 trials**, and populated half a second
+later. Every write endpoint in this service had the same shape.
+
+`get_session` commits in its exit code, after the `yield`. A `yield` dependency
+in FastAPI defaults to *request* scope, which runs that exit code after the
+response has been sent. So the order was: route returns, `201` goes out, then
+the row is written.
+
+The visible half is a read-your-writes failure, and in this console it is not
+cosmetic — it redirects to the invoice straight after a decision, so it could
+render a just-approved invoice as undecided, form and all, and invite a second
+decision. The invisible half is worse: a commit that failed at commit time — a
+constraint, a dropped connection — left the client holding a `201` for a
+decision that was never recorded.
+
+`SessionDep` is `Depends(get_session, scope="function")`: the commit runs when
+the route returns and before the response is written, so a failure becomes a
+`500` and a success is readable the moment the client has it. Measured after:
+**0 of 12**. Two tests hold it:
+
+- `test_session_scope.py` walks every route, recursively through
+  sub-dependencies, and fails if any takes a session any other way. Its first
+  version passed while checking **zero routes**: FastAPI 0.141 no longer
+  flattens included routers into `app.routes`, so a flat scan finds nothing and
+  reports no offenders. A second test now asserts the scan found the routes it
+  should, so a future change of shape turns red instead of quietly becoming a
+  no-op. Both were proven by reverting one route and watching the first fail.
+- `TestTheResponseFollowsTheCommit` repeats the original measurement against the
+  live stack, with no sleep, six times.
+
+The integration suite had been green throughout, because every test that wrote
+something then polled for it. Polling is correct client behaviour for
+asynchronous work, and it was hiding a synchronous bug.
+
+---
+
+## D-017 — A person decides
+
+**Date:** 2026-09-10 · **Status:** accepted · **Has known, unpaid costs**
+
+M4 turned `disposition` from a string nothing read into something consequential.
+The calls that were genuinely contested:
+
+**You may decide an invoice only if you own every open exception on it.** The
+obvious rule, "the owner of the worst exception", is wrong in a specific and
+dangerous way. Exceptions sort by severity and then by code, so among blocking
+codes the alphabet breaks the tie, and `arithmetic_mismatch` (ap_clerk) sorts
+ahead of `bank_details_changed` (treasury). An altered total plus redirected
+remittance is the likeliest composite fraud in this domain, and a worst-owner
+rule hands it to a clerk who can clear treasury's finding without treasury ever
+seeing it. `test_approval.py` guards the premise itself, so the test cannot
+quietly stop testing anything if the taxonomy changes.
+
+The consequence is stated rather than hidden: an invoice whose exceptions have
+two different owners cannot be approved by one person, because there is no
+multi-party approval yet. It stays blocked and says which roles it needs.
+
+**Decisions attach to a `match_result`, not a document.** A decision is about one
+body of evidence. When a new version lands, the old approval does not refer to
+it, and nothing needs invalidating.
+
+**`auto_approved` and `held` are not terminal.** Only approve and reject are,
+enforced by a partial unique index. A terminal auto-approval would make D-016's
+documented worst gap — an unreadable payment block auto-approves — permanently
+unreachable by a person.
+
+**The console is a back-end for front-end.** The browser never holds a token;
+the console exchanges the code server-side and keeps the token in an httpOnly
+cookie. It authorises payment and renders vendor-supplied text, and a single XSS
+in a public-client console would hand out a bearer token for it. PKCE is written
+by hand rather than through a library, so the four things that matter — `state`,
+the verifier, server-side exchange, and the public/internal issuer split — are
+visible to a reader rather than behind an import.
+
+**The realm was reconciled to the taxonomy, never the reverse.** `receiving` and
+`treasury` owned exceptions and were not realm roles. Renaming an `OwnerRole`
+would have been the smaller diff and would have rewritten the owner stamped on
+every exception already stored.
+
+Found and fixed while verifying, each of which would have failed quietly:
+
+- **The stack came back half-up after a Docker VM restart.** `api`, `worker`
+  and `console` had `restart: unless-stopped`; Postgres, Redis, MinIO and
+  Keycloak had no policy, exited together with code 255, and stayed down for
+  eleven hours while the API reported healthy — correctly, since liveness is not
+  readiness, and uselessly. Every long-running service now restarts.
+- **The console's healthcheck tested the wrong thing.** It fetched `/queue`,
+  which redirects to login, which redirects to Keycloak's *public* URL. `fetch`
+  follows redirects, so it was asking whether `localhost:8080` was reachable from
+  inside the container, which it never is. The console reported unhealthy while
+  serving correctly. It now has a liveness route of its own.
+- **Backslashes collapsed in inline edits on this shell.** Several lines of
+  `smoke.sh` had acquired raw escape bytes and literal newlines across the last
+  few milestones, including a `tr -d '\r'` that had become `tr -d '<newline>'`.
+  Scripts are now written from files, and `smoke.sh` contains no control bytes.
+
+**Unpaid costs:**
+
+- **Readiness checks the wrong dependencies.** It checks Postgres and Redis.
+  Nothing in the application uses Redis; MinIO (ingest) and Keycloak (every
+  authenticated route) are used and not checked, so with only Keycloak down,
+  readiness says ready while authenticated calls return 503. The smoke check was
+  renamed to say what it actually checks rather than "every dependency". M5 owns
+  the fix, which includes deciding whether a shared IdP belongs in readiness at
+  all — pulling every instance out of rotation during an IdP blip is often worse
+  than serving a clear 503.
+- **Worker audit rows have no trace id.** A worker has no request to correlate
+  to. M5 propagates a trace through the queue payload.
+- **No multi-party approval**, so composite invoices with two owners cannot be
+  cleared in M4, and no segregation of duties between whoever resolves an
+  exception and whoever approves.
+- **The console has no browser-driven test.** `scripts/check_console.py` drives
+  it server-side as two roles, including a no-JavaScript submission, but nothing
+  runs a real browser against it. Typing a password into Keycloak's form from an
+  automated agent was deliberately not done; a person signing in is the
+  verification that remains.
+
+---
+
 ## D-016 — Payment-detail comparison, and the four ways it can decline to answer
 
 **Date:** 2026-09-10 · **Status:** accepted · **Closes D-013** · **Has a known, unpaid cost**

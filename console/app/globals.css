@@ -1,0 +1,299 @@
+/*
+ * One stylesheet. There is one table and one form in this application, and an
+ * abstraction over a population of one is a guess about a second case that does
+ * not exist yet.
+ *
+ * No animation anywhere. A queue traversed two hundred times a day is a tool,
+ * and motion in a tool is friction with a bow on it.
+ */
+
+:root {
+  --ink: #16181d;
+  --ink-soft: #5b6270;
+  --line: #dfe3ea;
+  --page: #f7f8fa;
+  --card: #ffffff;
+
+  /* Severity, and nothing else, is allowed to use colour to carry meaning --
+     and it is always paired with a word, because roughly one man in twelve
+     cannot rely on the red. */
+  --block: #a3231f;
+  --block-bg: #fdf0ef;
+  --review: #8a5a00;
+  --review-bg: #fdf6e7;
+  --clear: #1c6b3f;
+  --clear-bg: #eef7f1;
+
+  --focus: #1a4fd6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  /* The queue is keyboard-first: a reviewer tabs down it. Anchored jumps must
+     not put the target under the sticky header. */
+  scroll-padding-top: 5rem;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+}
+
+a {
+  color: var(--focus);
+}
+
+/* One visible focus ring, everywhere, and never removed. Keyboard triage is
+   the primary way this screen is used, not an accommodation bolted on. */
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+}
+.skip:focus {
+  left: 1rem;
+  top: 0.5rem;
+  z-index: 10;
+  background: var(--card);
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+}
+
+header.bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.85rem 1.5rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+
+header.bar h1 {
+  font-size: 1rem;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+header.bar .who {
+  margin-left: auto;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+main {
+  max-width: 62rem;
+  margin: 0 auto;
+  padding: 1.75rem 1.5rem 5rem;
+}
+
+h2 {
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.35rem;
+}
+
+.lede {
+  color: var(--ink-soft);
+  margin: 0 0 1.5rem;
+  max-width: 60ch;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 0.9rem;
+}
+
+.card h3 {
+  margin: 0 0 0.3rem;
+  font-size: 1rem;
+}
+
+.meta {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  margin: 0.35rem 0 0;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.tag.block {
+  color: var(--block);
+  background: var(--block-bg);
+  border-color: #f3cfcd;
+}
+.tag.review {
+  color: var(--review);
+  background: var(--review-bg);
+  border-color: #f0dfb4;
+}
+.tag.clear {
+  color: var(--clear);
+  background: var(--clear-bg);
+  border-color: #cfe6d9;
+}
+
+.exception {
+  border-left: 3px solid var(--line);
+  padding: 0.15rem 0 0.15rem 0.85rem;
+  margin: 0.85rem 0;
+}
+.exception.block {
+  border-left-color: var(--block);
+}
+.exception.review {
+  border-left-color: var(--review);
+}
+.exception p {
+  margin: 0.25rem 0 0;
+}
+
+.skipped {
+  border-left: 3px dashed var(--review);
+  padding: 0.15rem 0 0.15rem 0.85rem;
+  margin: 0.85rem 0;
+  color: var(--ink-soft);
+}
+
+.refusal {
+  background: var(--review-bg);
+  border: 1px solid #f0dfb4;
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  margin: 1rem 0 0;
+}
+
+.conflict {
+  background: var(--block-bg);
+  border: 1px solid #f3cfcd;
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  margin: 1rem 0 0;
+}
+
+form.decide {
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1.25rem;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+.hint {
+  font-weight: 400;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  margin: -0.2rem 0 0.5rem;
+}
+
+textarea,
+select {
+  width: 100%;
+  font: inherit;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: inherit;
+}
+
+textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+.actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.55rem 1.1rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: inherit;
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+}
+
+button[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+th {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+.empty {
+  color: var(--ink-soft);
+  padding: 2rem 0;
+}
+
+code {
+  font: 0.85em ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  background: var(--page);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}

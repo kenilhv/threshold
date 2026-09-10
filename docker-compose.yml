@@ -30,10 +30,17 @@ x-app-env: &app-env
   THRESHOLD_OIDC_JWKS_URL: http://keycloak:8080/realms/threshold/protocol/openid-connect/certs
 
 services:
+  # Every long-running service restarts; the one-shot jobs (migrate, seed,
+  # minio-init) deliberately do not. The dependencies were missing this until
+  # a Docker VM restart proved why it matters: api, worker and console came back
+  # on their own, Postgres, Redis, MinIO and Keycloak did not, and the stack sat
+  # half-up for eleven hours with the API reporting healthy against a database
+  # that was not running. Liveness said yes because liveness is not readiness.
   postgres:
     # pgvector ships in the same image as Postgres 16. One datastore of record,
     # including vectors: same transaction, same backup, same restore drill.
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: threshold
       POSTGRES_PASSWORD: threshold
@@ -53,6 +60,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     # Redis holds only replayable state — idempotency-key cache, locks, rate
     # limits. Nothing here is durable, so it is started with persistence off on
     # purpose: an accidental restore of stale locks is worse than a cold cache.
@@ -67,6 +75,7 @@ services:
 
   minio:
     image: minio/minio:latest
+    restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -101,6 +110,7 @@ services:
     # Real OIDC rather than hand-rolled JWT. The realm is committed as JSON so
     # roles are reproducible instead of clicked into existence.
     image: quay.io/keycloak/keycloak:26.0
+    restart: unless-stopped
     command: ["start-dev", "--import-realm", "--http-port=8080"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
@@ -181,6 +191,41 @@ services:
       timeout: 5s
       retries: 12
       start_period: 5s
+
+  console:
+    # The operator console. A back-end for front-end: it holds the access token
+    # server-side and the browser never sees one, because this is the surface
+    # that authorises payment and an XSS on a page rendering vendor-supplied
+    # invoice text would otherwise hand out a bearer token for it.
+    build:
+      context: ./console
+    environment:
+      # The issuer the browser is redirected to, and the one this container can
+      # reach, are different hosts for the same Keycloak. Deriving either from
+      # the other is what makes a correct issuer check reject every real token.
+      THRESHOLD_OIDC_PUBLIC_ISSUER: http://localhost:8080/realms/threshold
+      THRESHOLD_OIDC_INTERNAL_ISSUER: http://keycloak:8080/realms/threshold
+      THRESHOLD_OIDC_CLIENT_ID: threshold-console
+      THRESHOLD_CONSOLE_ORIGIN: http://localhost:3000
+      THRESHOLD_API_URL: http://api:8000
+      # Local only: the console is served over plain HTTP at localhost, so a
+      # Secure cookie would never be sent back and nobody could sign in.
+      THRESHOLD_INSECURE_COOKIES: "1"
+    depends_on:
+      api:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
 
   worker:
     build:

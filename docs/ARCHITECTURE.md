@@ -27,18 +27,24 @@ Worker pool (Python, asyncio)
    ├─ classify     frozen exception taxonomy, tolerances, owner routing  [DETERMINISTIC]
    └─ triage       agent loop, exceptions only, read tools + escalate    [AGENT]
    ▼
-Approval service — state machine, optimistic concurrency, audit events
+Decisions — append-only, machine and human in one table, one terminal row
    ▼
-Operator console (Next.js) ── human approves / rejects / holds
+Operator console (Next.js, BFF) ── the owner approves / rejects / holds
    ▼
 Payment executor (Go) — idempotency key, double-entry ledger, Stripe sandbox
 ```
 
-Built today: everything down to and including `classify`. A PDF ingests, a
-worker extracts it, and a second job matches the result against its purchase
-order and the goods received, writing a disposition with routed exceptions
-attached. The `extract` step runs the deterministic tier; the model tier arrives
-with M7. Approval, the console and the payment executor are M4 onwards.
+Built today: everything down to and including the console. A PDF ingests, a
+worker extracts it, a second job matches it against its purchase order and the
+goods received, and either the system records its own approval or the invoice
+waits in a queue for the person who owns what went wrong. The `extract` step
+runs the deterministic tier; the model tier arrives with M7. `triage` is M7 and
+the payment executor is M8.
+
+The diagram used to say "state machine" for the approval step. There is no
+state machine, and that is a decision rather than an omission: the current state
+of an invoice is derived from an append-only table of decisions, so there is no
+status column that can disagree with its own history.
 
 ---
 
@@ -177,6 +183,80 @@ does not have — so it was removed rather than left looking covered.
 
 ---
 
+## Deciding, and who may
+
+A decision is a row in `approval_decision`, and the machine and the person are
+peers in it. When a match raises nothing, the matcher writes `auto_approved`
+with `actor_type = 'system'`; when a person decides, the row differs in its
+actor and its reason and nothing else. "What did this system decide without
+asking anybody, and who decided the rest" is therefore one query, not an
+inference from the absence of a human row.
+
+**You may decide an invoice only if you own every open exception on it.** Not
+"the owner of the worst exception", which looks equivalent and is not.
+Exceptions sort by severity and then by code, so among blocking codes the
+alphabet breaks the tie — and `arithmetic_mismatch`, owned by a clerk, sorts
+ahead of `bank_details_changed`, owned by treasury. An invoice with an altered
+total *and* redirected remittance details is the likeliest composite fraud in
+this domain, and a worst-owner rule hands it to the clerk. Under the real rule
+it needs both roles, so in M4 it stays blocked and says which roles it needs.
+There is no multi-party approval yet; the limitation is stated, and it fails
+safe.
+
+**A decision belongs to a body of evidence, not to a document.** It references
+one `match_result` version — this extraction, judged under this policy. When a
+receipt arrives and the matcher writes a new version, the old approval simply
+does not refer to it. Nothing has to be invalidated because nothing was ever
+attached to the document in general.
+
+**Only approve and reject are terminal**, enforced by a partial unique index
+rather than a read-then-write. `held` is a state somebody is in the middle of.
+`auto_approved` is deliberately not terminal either: D-016 records that an
+invoice whose payment block cannot be read auto-approves with a recorded skip,
+and freezing that would make the project's worst documented gap unreachable by
+a person.
+
+Three refusals, and none of them is a retry. A `403` names the roles the
+invoice needs. A `409` for evidence that moved carries the version seen and the
+version that exists, because the right next step is to look again. A `409` for
+a second terminal decision says who decided and what. Every human decision
+requires a reason, and `overrode` records which codes it cleared, so "approved
+over a bank-detail change" is a number you can count.
+
+## The console, and where the token lives
+
+The console is a back-end for front-end. It performs authorization code with
+PKCE against Keycloak by hand, keeps the access token in an httpOnly cookie on
+its own origin, and calls the API from the server. The browser never holds a
+bearer token.
+
+That is a choice with a cost — an extra hop on every page — and the reason is
+specific to this application. It authorises payment, and it renders text that
+came from vendors. A single cross-site scripting bug in a public-client console
+would hand an attacker a token for an API that approves money; here, the worst
+an injected script can do is act as the user through this origin, which the
+same-site cookie and the audit trail both constrain.
+
+Two issuers, not one. The browser is sent to `localhost:8080`; the container
+exchanges the code at `keycloak:8080`. Keycloak is pinned with `KC_HOSTNAME` so
+the token's `iss` is stable, and the API fetches keys from a separately
+configured JWKS URL. Deriving either from the other is what makes a correct,
+exact issuer check reject every real token.
+
+The queue, the invoice and the decision are server-rendered. There is exactly
+one client component — the decision form — and it is a client component for one
+reason: the outcome of a submission has to be announced in a live region that
+survives the response. There is no optimistic UI, because the server may refuse
+and a screen that shows "approved" and takes it back is the one interaction this
+product must not have. The form also works with JavaScript disabled, which
+`scripts/check_console.py` exercises end to end.
+
+What is on screen is the smallest set that lets an owner decide: the exceptions,
+their owner and deadline, the checks that did not run at the same weight as the
+ones that failed, and the history. What is not: a dashboard, charts, or any
+number that cannot be computed from anything but seed data. For somebody who may
+not decide, the form is replaced by the reason, in domain terms.
+
 ## How work survives a crash
 
 The queue is the part of this system most likely to be built badly, so it is
@@ -204,6 +284,13 @@ single-worker test and then, depending on isolation level, either serialises the
 pool or hands one row to two workers. In accounts payable that second failure
 mode means paying an invoice twice, so it is tested directly: four concurrent
 workers, forty jobs, each claimed exactly once.
+
+**A lease is measured on one clock.** Every timestamp the queue writes and
+later compares comes from the database's `now()`, never the worker's. The reaper
+judges a lease against the database clock, so a lease computed on the worker's
+would only be as good as the agreement between the two — and a worker VM that
+drifts behind after the host sleeps would write leases that are already
+expired, handing live work to a second worker. See D-019.
 
 **A killed worker loses nothing.** The row is still in the table with its
 payload and attempt history; the only thing wrong with it is that it is
@@ -404,7 +491,8 @@ src/threshold/
 migrations/       Alembic, reversible, one transaction per upgrade
 infra/local/      Keycloak realm and other local-only fixtures
   services/       use cases that compose adapters — ingestion, matching
-scripts/          seed, smoke test, queue CLI, crash and match demos
+scripts/          seed, smoke test, queue CLI, crash and match demos, console check
+console/          the operator console (Next.js, App Router, server-rendered)
 tests/unit/       no stack required, runs on every commit
 tests/integration/ requires `make up`
 ```

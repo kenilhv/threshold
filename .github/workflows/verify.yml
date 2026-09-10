@@ -71,3 +71,41 @@ jobs:
         # upgrade has a downgrade. A branched history is the failure that turns
         # a deploy into an outage, and it is invisible until someone deploys.
         run: python scripts/check_migration_graph.py
+
+  console:
+    # The only TypeScript in the repository, and until this job it was checked
+    # by nothing. Its own `lint` script had been broken from the start: it
+    # called `next lint`, which Next 16 removed, and which now reads "lint" as a
+    # directory name and fails.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: console
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The version the console's Dockerfile builds on.
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      # Types and lint as separate steps, for the same reason as above: which
+      # one failed should be visible without opening the log.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # The build is the check that the App Router accepts the tree: server and
+      # client component boundaries, route handler signatures, and that nothing
+      # server-only has leaked into the client bundle.
+      - name: Build
+        run: npm run build

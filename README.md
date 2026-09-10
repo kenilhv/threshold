@@ -7,13 +7,20 @@ The name is the argument. The system's entire job is to hold a defensible line
 between what a machine may execute alone and what a human must decide, and to
 show where that line is and why it sits there.
 
-> **Status: M3.** A PDF ingests, a worker extracts it, and a second worker
-> matches it against its purchase order and the goods received — producing a
-> disposition, the exceptions behind it, and whose desk each one lands on.
-> `make demo-match` submits four invoices: one approves, one blocks on price,
-> one goes to receiving for review, and one — arithmetically perfect — blocks to
-> treasury because it asks to be paid into an account this vendor has never used. The milestones below are honest about what does not
-> exist yet. Every claim in this README is checkable against the repository.
+> **Status: M4.** A PDF ingests, a worker extracts it and matches it against
+> its purchase order and the goods received, and then one of two things
+> happens. Either nothing went wrong and the system records its own approval,
+> or the invoice waits in a queue for the person who owns what did — and
+> anyone else who opens it sees the reason in place of the button.
+>
+> `make demo-match` submits four invoices: one approves itself, one blocks on
+> price and goes to the buyer, one goes to receiving because nothing has
+> arrived, and one, arithmetically perfect, blocks to treasury because it asks
+> to be paid into an account this vendor has never used. The console at
+> <http://localhost:3000> is where those three get decided.
+>
+> The milestones below are honest about what does not exist yet. Every claim
+> in this README is checkable against the repository.
 
 ---
 
@@ -25,7 +32,7 @@ make up
 
 That is the whole thing. It builds the images, starts Postgres, Redis, MinIO and
 Keycloak, waits for each to pass its own healthcheck, applies the migrations,
-loads reference data, then starts the API and the worker.
+loads reference data, then starts the API, the worker and the console.
 
 | | |
 |---|---|
@@ -33,6 +40,11 @@ loads reference data, then starts the API and the worker.
 | Readiness | <http://localhost:8000/readyz> |
 | MinIO console | <http://localhost:9001> — `minioadmin` / `minioadmin` |
 | Keycloak | <http://localhost:8080> — `admin` / `admin` |
+| **Console** | <http://localhost:3000> — sign in as `clerk`, `buyer`, `receiving`, `treasury`, `controller` or `auditor` |
+
+The seeded users' passwords are their usernames. That is a local fixture and
+would be a finding anywhere else; the realm is committed so the roles are
+reproducible, not so the passwords are.
 
 Then prove it actually works rather than merely started:
 
@@ -45,11 +57,22 @@ asked to allow an UPDATE and must refuse, a real PDF is ingested twice and must
 produce one document, and the queue is inspected for jobs holding an expired
 lease.
 
-To see the decision layer make three different calls on three invoices:
+To see the decision layer make four different calls on four invoices:
 
 ```bash
 make demo-match
 ```
+
+Then open the console as `clerk` and as `buyer`. The clerk sees the over-billed
+invoice and is told it belongs to the buyer; the buyer sees the same invoice with
+a decision form. To check the same thing without a browser:
+
+```bash
+make check-console
+```
+
+It drives the console as both, including a decision submitted with JavaScript
+disabled, and confirms no restricted value reaches the page.
 
 To watch the durability claim hold under an actual crash:
 
@@ -146,7 +169,16 @@ Full reasoning, including what is deliberately *not* distributed and why:
       against the vendor's own bank history, so a genuine invoice resent with
       altered remittance details blocks to treasury even when every number on it
       agrees.
-- [ ] M4 — the operator console
+- [x] **M4 — a person decides.** The API authenticates against Keycloak and
+      verifies algorithm, issuer, audience and expiry, with the classic
+      algorithm-confusion attack tested. Every state transition writes an
+      audit row with the request that caused it. A review projection derived
+      from the column declarations drops restricted data, and a test walks
+      every model to prove it. Decisions live in one append-only table where
+      the machine and the person are peers, and you may decide an invoice only
+      if you own every open exception on it. The console is a back-end for
+      front-end — the browser never holds a token — and works with JavaScript
+      disabled.
 - [ ] M5 — OpenTelemetry end to end, dashboards, alert rules, runbooks
 - [ ] M6 — evaluation harness, calibration curve, CI regression gate
 - [ ] M7 — the triage agent and its injection red-team suite

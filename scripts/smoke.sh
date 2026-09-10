@@ -35,7 +35,10 @@ check "GET /healthz" "200" \
 check "GET /readyz" "200" \
   "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$API/readyz")"
 
-check "readiness reports every dependency up" "true" \
+# Named for what readiness actually checks. It is not every dependency: Redis
+# is checked and nothing in the application uses it, while MinIO and Keycloak
+# are used and not checked. Recorded in D-017 as M5's to fix.
+check "readiness reports postgres and redis up" "true" \
   "$(curl -s --max-time 10 "$API/readyz" | python -c 'import json,sys; print(str(json.load(sys.stdin)["ready"]).lower())')"
 
 # The first assertion in this repository that the API refuses something. Every
@@ -209,11 +212,17 @@ else
 fi
 rm -f "$FIXTURE"
 
+# --- the console ------------------------------------------------------------
+# Driven as a clerk and as a buyer through the console's own session cookie,
+# including a decision submitted with JavaScript disabled. The detail is in
+# scripts/check_console.py; here it is one line, because a smoke test reports
+# that the thing works and points at where to look when it does not.
+check "the console refuses the clerk and records the buyer's decision" "0" \
+  "$(python scripts/check_console.py >/dev/null 2>&1; echo $?)"
+
 echo
 if [[ $fail -eq 0 ]]; then
-  printf '[32mAll %d checks passed.[0m
-
-' "$checks"
+  printf '\033[32mAll %d checks passed.\033[0m\n\n' "$checks"
 else
   printf '\033[31mSmoke test failed.\033[0m\n\n'
   exit 1

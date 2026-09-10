@@ -90,6 +90,10 @@ fmt: ## Apply formatting and fixable lints
 	python -m ruff format src tests scripts seeds migrations
 	python -m ruff check --fix src tests scripts seeds migrations
 
+.PHONY: console-verify
+console-verify: ## Typecheck, lint and build the console (what its CI job runs)
+	cd console && npm ci && npm run typecheck && npm run lint && npm run build
+
 .PHONY: verify
 verify: lint test ## What CI runs on every commit
 
@@ -120,6 +124,10 @@ smoke: ## Prove the running stack is healthy end to end
 .PHONY: demo-crash
 demo-crash: ## SIGKILL a worker mid-job and watch the work survive
 	@bash scripts/demo_crash_recovery.sh
+
+.PHONY: check-console
+check-console: ## Drive the console as a clerk and a buyer, and check what it renders
+	@python scripts/check_console.py
 
 .PHONY: demo-match
 demo-match: ## Three invoices, three decisions, and the reason for each
