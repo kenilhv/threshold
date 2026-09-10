@@ -217,7 +217,18 @@ class ExtractionResult(BaseModel):
 #: ``classification.py``'s rule for that level is *dropped, not masked*: doing so
 #: would delete the entire extraction from the review projection in order to
 #: protect two keys, and a reviewer cannot judge an invoice they cannot see.
-RESTRICTED_FIELD_KEYS: Final = frozenset({"bank_account_last4", "bank_routing_last4"})
+RESTRICTED_FIELD_KEYS: Final = frozenset(
+    {
+        "bank_account_last4",
+        "bank_routing_last4",
+        # The same datum as Vendor.tax_id, which is declared RESTRICTED on the
+        # column. Read off the page it is no less identifying, and leaving it
+        # out here classified one copy of a government identifier as secret
+        # while serving the other to anyone who asked. The matcher still uses
+        # it: this set governs the projection, not the stored blob.
+        "vendor_tax_id",
+    }
+)
 
 
 def redacted_fields(fields: Mapping[str, object]) -> dict[str, object]:

@@ -31,8 +31,17 @@ from threshold.adapters.db import get_session
 from threshold.adapters.extraction.port import ExtractionError
 from threshold.api import idempotency
 from threshold.api.dependencies import get_ingest_service
+from threshold.domain.classification import Sensitivity
 from threshold.domain.extraction import redacted_fields
-from threshold.domain.models import Document, Extraction, MatchException, MatchResult
+from threshold.domain.models import (
+    Document,
+    Extraction,
+    MatchException,
+    MatchResult,
+    PurchaseOrder,
+    Vendor,
+)
+from threshold.domain.projection import project
 from threshold.services.ingest import (
     DocumentTooLargeError,
     IngestService,
@@ -99,6 +108,20 @@ class ExceptionView(BaseModel):
     breach: dict[str, object] | None = None
 
 
+class VendorView(BaseModel):
+    """Who is billing, as much of it as a reviewer may see.
+
+    Built through the review projection rather than field by field, so the tax
+    identifier is dropped because it is declared RESTRICTED — not because
+    somebody remembered to leave it out here.
+    """
+
+    vendor_number: str
+    display_name: str
+    country_code: str
+    status: str
+
+
 class MatchView(BaseModel):
     """What the matcher concluded, and everything needed to argue with it.
 
@@ -116,6 +139,9 @@ class MatchView(BaseModel):
     line_pairs: list[dict[str, int]]
     skipped_checks: list[str]
     exceptions: list[ExceptionView]
+    #: None when the invoice's vendor did not resolve, which is itself an
+    #: exception on the list above.
+    vendor: VendorView | None = None
 
 
 @router.post(
@@ -294,6 +320,26 @@ async def get_match(
         .all()
     )
 
+    vendor_view: VendorView | None = None
+    if result.purchase_order_id is not None:
+        vendor = (
+            await session.execute(
+                select(Vendor)
+                .join(PurchaseOrder, PurchaseOrder.vendor_id == Vendor.id)
+                .where(PurchaseOrder.id == result.purchase_order_id)
+            )
+        ).scalar_one_or_none()
+        if vendor is not None:
+            # Everything a reviewer may see, decided by the column declarations
+            # rather than by this function.
+            visible = project(vendor, level=Sensitivity.INTERNAL)
+            vendor_view = VendorView(
+                vendor_number=visible["vendor_number"],
+                display_name=visible["display_name"],
+                country_code=visible["country_code"],
+                status=visible["status"],
+            )
+
     return MatchView(
         document_id=str(result.document_id),
         version=result.version,
@@ -302,6 +348,7 @@ async def get_match(
         decided_at=result.decided_at.isoformat(),
         line_pairs=list(result.line_pairs),
         skipped_checks=list(result.skipped_checks),
+        vendor=vendor_view,
         exceptions=[
             ExceptionView(
                 code=item.code,
