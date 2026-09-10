@@ -131,6 +131,9 @@ class MatchView(BaseModel):
     the whole value of the answer.
     """
 
+    #: The decision endpoint acts on this, not on the document: a decision is
+    #: about one body of evidence, and a new version is different evidence.
+    match_result_id: str
     document_id: str
     version: int
     disposition: str
@@ -341,6 +344,7 @@ async def get_match(
             )
 
     return MatchView(
+        match_result_id=str(result.id),
         document_id=str(result.document_id),
         version=result.version,
         disposition=result.disposition,

@@ -891,6 +891,11 @@ class MatchResult(Base):
     exceptions: Mapped[list[MatchException]] = relationship(
         back_populates="match_result", cascade="all, delete-orphan"
     )
+    decisions: Mapped[list[ApprovalDecision]] = relationship(
+        back_populates="match_result",
+        cascade="all, delete-orphan",
+        order_by="ApprovalDecision.decided_at",
+    )
 
     __table_args__ = (
         UniqueConstraint("document_id", "version", name="uq_match_result_version"),
@@ -971,4 +976,126 @@ class MatchException(Base):
             postgresql_where=text("resolved_at IS NULL"),
         ),
         Index("ix_match_exception_code", "code"),
+    )
+
+
+class ApprovalDecision(Base):
+    """One decision about one invoice, by a person or by the system.
+
+    The machine and the human are peers here. When a match raises nothing, the
+    matcher writes an ``auto_approved`` row with ``actor_type = 'system'``; when
+    a person decides, the row differs in its actor and its reason and in nothing
+    else. That is what turns "what did this system decide without asking
+    anybody, and who decided the rest" into one query against one table, rather
+    than an inference from the absence of a human record.
+
+    **Attached to a match_result, not to a document.** A decision is about a
+    body of evidence: this extraction, judged under this policy version, with
+    these exceptions. When a receipt arrives or the tolerance policy moves, the
+    matcher writes a new ``match_result`` version and the earlier approval
+    simply does not refer to it. Nothing needs to be invalidated, because
+    nothing was ever attached to the document in general — which is the failure
+    this shape avoids: an approval granted on evidence that later changed, still
+    reading as current.
+
+    Append-only in the same spirit as ``audit_event``. There is no un-approve,
+    no edit and no delete. A decision that turns out to be wrong is followed by
+    another decision, and both are visible.
+    """
+
+    __tablename__ = "approval_decision"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    match_result_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("match_result.id", ondelete="CASCADE"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    #: Denormalised from match_result so the queue can be read without a join,
+    #: and so a decision remains attributable to a document if the matching
+    #: history is ever archived. It is a foreign key, not a copy of a string.
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("document.id", ondelete="CASCADE"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    decision: Mapped[str] = mapped_column(
+        String(20), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    #: The issuer's subject, not the username. Usernames get reassigned, and a
+    #: row reading "clerk" three years from now may mean a different person.
+    actor_id: Mapped[str | None] = mapped_column(
+        String(200), nullable=True, info=classify(Sensitivity.INTERNAL)
+    )
+    actor_label: Mapped[str | None] = mapped_column(
+        String(200), nullable=True, info=classify(Sensitivity.INTERNAL)
+    )
+
+    #: Why. Required of every human decision and absent on the system's own,
+    #: which has no judgement to explain. The only part of this row a later
+    #: reader cannot reconstruct from the others.
+    reason: Mapped[str | None] = mapped_column(
+        Text, nullable=True, info=classify(Sensitivity.INTERNAL)
+    )
+
+    #: The exception codes this decision cleared. An approval that records only
+    #: that somebody clicked is the fail-open path wearing a justification
+    #: field; this is what makes "approved over a bank-detail change" countable.
+    overrode: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    match_result: Mapped[MatchResult] = relationship(back_populates="decisions")
+
+    __table_args__ = (
+        CheckConstraint(
+            "decision in ('auto_approved', 'approved', 'rejected', 'held')",
+            name="ck_approval_decision_kind",
+        ),
+        CheckConstraint(
+            "actor_type in ('system', 'human', 'agent')",
+            name="ck_approval_decision_actor_type",
+        ),
+        # A human decision must say why; the system's must not pretend to.
+        CheckConstraint(
+            "(actor_type = 'system') = (reason IS NULL)",
+            name="ck_approval_decision_reason_matches_actor",
+        ),
+        CheckConstraint(
+            "(actor_type = 'human') = (actor_id IS NOT NULL)",
+            name="ck_approval_decision_human_is_identified",
+        ),
+        # At most one terminal decision per match result, enforced by the
+        # database rather than by a read-then-write in application code. Two
+        # reviewers opening the same invoice is not hypothetical, and the loser
+        # of that race must be told, not silently second.
+        #
+        # `auto_approved` and `held` are absent on purpose. An invoice the
+        # machine cleared must remain stoppable by a person — see D-016 — and a
+        # hold is a state somebody is in the middle of rather than an outcome.
+        Index(
+            "uq_approval_decision_terminal",
+            "match_result_id",
+            unique=True,
+            postgresql_where=text("decision IN ('approved', 'rejected')"),
+        ),
+        Index("ix_approval_decision_document", "document_id", "decided_at"),
     )

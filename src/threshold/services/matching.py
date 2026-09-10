@@ -44,6 +44,7 @@ from threshold.domain.models import (
     VendorBankAccount,
 )
 from threshold.domain.tolerance import DEFAULT_POLICY, ZERO, TolerancePolicy
+from threshold.services.approvals import ApprovalService
 from threshold.services.audit import Actor, record
 
 log = structlog.get_logger(__name__)
@@ -426,6 +427,12 @@ class MatchingService:
                 "skipped_checks": len(outcome.skipped_checks),
             },
         )
+
+        # The machine's own decision, written into the same table a person
+        # writes to. Without this, "the system cleared it" is an absence of a
+        # human row, which is indistinguishable from nobody having looked yet.
+        if outcome.disposition is Disposition.AUTO_APPROVE:
+            await ApprovalService().record_auto_approval(session, result)
 
         log.info(
             "match.decided",
