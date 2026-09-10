@@ -36,9 +36,30 @@ the same model:
 > rather than the other way round — renaming an `OwnerRole` would rewrite the
 > owner stamped on every exception already stored.
 >
-> An earlier version of this table also described a delegation limit. No such
-> limit exists anywhere in the code, so the sentence has been removed rather
-> than left as a specification nobody wrote.
+### `threshold-tests`, and why it exists
+
+The realm carries a third client that a deployed realm would not. It is
+confidential, it enables direct access grants, and its only consumer is the
+integration suite.
+
+The alternative was worse. Without it there is no way to obtain a real token
+for a real user from pytest: `threshold-console` is a public client using
+authorization-code with PKCE — correctly, since it runs in a browser — and
+`threshold-api` is bearer-only and mints nothing. So the auth tests would have
+had to forge their own tokens and then assert that the verifier accepts them,
+which proves the forger and the verifier agree and nothing else. The unit
+suite does exactly that on purpose, with a throwaway keypair; this client is
+what lets the integration suite check the far more useful property, that a
+token **Keycloak actually issued** parses the way the API assumes.
+
+Enabling the password grant on the console client instead would have been the
+smaller diff and the wrong one: it would put a flow in the browser client that
+PKCE exists to replace, to save writing eight lines of JSON.
+
+> An earlier version of this table also described an approval ceiling above
+> which a clerk could not sign off. No such control exists anywhere in the
+> code, so the sentence is gone rather than left standing as a specification
+> nobody wrote. `test_role_taxonomy.py` fails if it comes back.
 
 A vendor banking change routing to `controller` rather than to whoever is on
 shift is the control that matters most here: it is the shape almost every real

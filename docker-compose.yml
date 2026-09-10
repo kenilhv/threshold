@@ -22,7 +22,12 @@ x-app-env: &app-env
   THRESHOLD_S3_ACCESS_KEY_ID: minioadmin
   THRESHOLD_S3_SECRET_ACCESS_KEY: minioadmin
   THRESHOLD_S3_BUCKET_DOCUMENTS: threshold-documents
-  THRESHOLD_OIDC_ISSUER: http://keycloak:8080/realms/threshold
+  # What a token must claim, exactly.
+  THRESHOLD_OIDC_ISSUER: http://localhost:8080/realms/threshold
+  # Where this process can actually reach the signing keys. Deliberately not
+  # derived from the issuer: the issuer is an identity and this is a route, and
+  # inside the compose network the route is a different host.
+  THRESHOLD_OIDC_JWKS_URL: http://keycloak:8080/realms/threshold/protocol/openid-connect/certs
 
 services:
   postgres:
@@ -101,6 +106,15 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_HEALTH_ENABLED: "true"
+      # Pinned so `iss` is stable. Keycloak 26 otherwise derives the issuer from
+      # the request Host, which means a browser logging in at localhost:8080 is
+      # handed a token claiming a different issuer than a service calling
+      # keycloak:8080 would expect -- and an issuer check that is exact, as it
+      # must be, then rejects every real token. Pinning it makes `iss` a
+      # constant and moves the container-vs-browser split to where it belongs:
+      # the JWKS URL, which is a network address rather than an identity.
+      KC_HOSTNAME: http://localhost:8080
+      KC_HOSTNAME_STRICT: "false"
     ports:
       - "8080:8080"
     volumes:

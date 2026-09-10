@@ -10,19 +10,27 @@
     "realm": [
       {
         "name": "ap_clerk",
-        "description": "Processes invoices. May review and resolve routine exceptions; may not approve above the delegation limit."
+        "description": "Processes invoices. Owns document-quality exceptions: arithmetic that does not reconcile, suspected duplicates, and invoices whose vendor did not resolve."
       },
       {
         "name": "buyer",
         "description": "Owns purchasing decisions. Receives price and quantity variances against the purchase order they raised."
       },
       {
+        "name": "receiving",
+        "description": "Owns the goods-receipt record. Receives invoices billed before anything was recorded as received."
+      },
+      {
+        "name": "treasury",
+        "description": "Owns the payment instruction. Receives vendor bank-detail changes, which carry the shortest deadline in the system."
+      },
+      {
         "name": "controller",
-        "description": "Owns financial control. Sole approver of vendor banking changes and anything above the delegation limit."
+        "description": "Financial oversight. Owns no exception class in the shipped taxonomy; present so oversight is a role rather than a person."
       },
       {
         "name": "auditor",
-        "description": "Read-only across every projection including the audit trail. Cannot approve, reject or mutate anything."
+        "description": "Read-only across every projection including the audit trail. Cannot approve, reject or hold anything."
       }
     ]
   },
@@ -52,7 +60,75 @@
         "post.logout.redirect.uris": "http://localhost:3000/*"
       },
       "redirectUris": ["http://localhost:3000/*"],
-      "webOrigins": ["http://localhost:3000"]
+      "webOrigins": ["http://localhost:3000"],
+      "protocolMappers": [
+        {
+          "name": "threshold-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "threshold-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "threshold-tests",
+      "name": "Integration test harness (local only)",
+      "description": "Local-only test harness. Lets the integration suite mint a real token for a real user instead of forging one. Not present in a deployed realm; see README.md.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "secret": "local-tests-only",
+      "protocolMappers": [
+        {
+          "name": "threshold-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "threshold-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
     }
   ],
 
@@ -66,6 +142,36 @@
       "email": "clerk@threshold.local",
       "credentials": [{ "type": "password", "value": "clerk", "temporary": false }],
       "realmRoles": ["ap_clerk"]
+    },
+    {
+      "username": "buyer",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Rosa",
+      "lastName": "Okafor",
+      "email": "r.okafor@threshold.local",
+      "credentials": [{ "type": "password", "value": "buyer", "temporary": false }],
+      "realmRoles": ["buyer"]
+    },
+    {
+      "username": "receiving",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Sam",
+      "lastName": "Mistry",
+      "email": "s.mistry@threshold.local",
+      "credentials": [{ "type": "password", "value": "receiving", "temporary": false }],
+      "realmRoles": ["receiving"]
+    },
+    {
+      "username": "treasury",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Nadia",
+      "lastName": "Haddad",
+      "email": "n.haddad@threshold.local",
+      "credentials": [{ "type": "password", "value": "treasury", "temporary": false }],
+      "realmRoles": ["treasury"]
     },
     {
       "username": "controller",

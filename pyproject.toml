@@ -15,6 +15,9 @@ dependencies = [
     "redis>=5.2",
     "boto3>=1.35",
     "structlog>=24.4",
+    # RS256 verification needs the crypto extra; without it PyJWT raises at
+    # decode time rather than at import, which is a runtime 500 on the auth path.
+    "pyjwt[crypto]>=2.9",
     "python-multipart>=0.0.20",
     "pypdf>=5.1",
 ]

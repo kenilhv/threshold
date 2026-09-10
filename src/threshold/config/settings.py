@@ -42,7 +42,14 @@ class Settings(BaseSettings):
     s3_access_key_id: str
     s3_secret_access_key: str
 
+    #: What a token must claim as its issuer, matched exactly.
     oidc_issuer: str | None = None
+    #: Where this process can reach the issuer's signing keys. Separate from
+    #: the issuer on purpose: the issuer is an identity a token asserts, and
+    #: this is a network route. Inside a container network they differ, and
+    #: deriving one from the other is what makes an exact issuer check reject
+    #: every real token.
+    oidc_jwks_url: str | None = None
     oidc_audience: str = "threshold-api"
 
     @field_validator("log_level")

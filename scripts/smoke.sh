@@ -38,6 +38,29 @@ check "GET /readyz" "200" \
 check "readiness reports every dependency up" "true" \
   "$(curl -s --max-time 10 "$API/readyz" | python -c 'import json,sys; print(str(json.load(sys.stdin)["ready"]).lower())')"
 
+# The first assertion in this repository that the API refuses something. Every
+# endpoint was open until M4, including the ones about to authorise payment.
+check "GET /v1/me without a token is refused" "401" \
+  "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$API/v1/me")"
+
+# A real token from the running Keycloak, not one this script forged. The two
+# assumptions it proves were both wrong before M4: that the access token is
+# addressed to threshold-api, and that realm roles arrive at realm_access.roles.
+TOKEN="$(curl -s --max-time 15 -X POST \
+  "http://localhost:8080/realms/threshold/protocol/openid-connect/token" \
+  -d grant_type=password -d client_id=threshold-tests -d client_secret=local-tests-only \
+  -d username=treasury -d password=treasury \
+  | python -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null)"
+
+check "a real token from Keycloak is accepted" "treasury" \
+  "$(curl -s --max-time 10 -H "Authorization: Bearer $TOKEN" "$API/v1/me" \
+    | python -c 'import json,sys; print(json.load(sys.stdin).get("username",""))' 2>/dev/null)"
+
+check "the role survives into the principal" "treasury" \
+  "$(curl -s --max-time 10 -H "Authorization: Bearer $TOKEN" "$API/v1/me" \
+    | python -c 'import json,sys; print(",".join(json.load(sys.stdin).get("roles",[])))' 2>/dev/null)"
+
+
 check "OpenAPI contract is served" "200" \
   "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$API/openapi.json")"
 
