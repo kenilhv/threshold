@@ -44,6 +44,7 @@ from threshold.domain.models import (
     VendorBankAccount,
 )
 from threshold.domain.tolerance import DEFAULT_POLICY, ZERO, TolerancePolicy
+from threshold.services.audit import Actor, record
 
 log = structlog.get_logger(__name__)
 
@@ -405,6 +406,27 @@ class MatchingService:
             )
 
         await session.flush()
+
+        # In the same transaction as the rows it describes. models.py has said
+        # since M0 that every state transition writes one of these; this one
+        # emitted a log line and nothing else, so the claim was false for the
+        # single most consequential transition in the system.
+        await record(
+            session,
+            actor=Actor.system(),
+            action="match.decided",
+            entity_type="match_result",
+            entity_id=result.id,
+            after={
+                "document_id": str(document.id),
+                "version": next_version,
+                "disposition": outcome.disposition.value,
+                "policy_version": outcome.policy_version,
+                "exception_codes": sorted({e.code.value for e in outcome.exceptions}),
+                "skipped_checks": len(outcome.skipped_checks),
+            },
+        )
+
         log.info(
             "match.decided",
             document_id=str(document.id),

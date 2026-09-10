@@ -8,12 +8,14 @@ makes a compliance question and a latency question answerable from one row.
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 
 from threshold.adapters.db import dispose_engine, init_engine
 from threshold.api.routes import documents, health, identity
@@ -42,6 +44,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("service.stop", service=settings.service_name)
 
 
+#: An inbound request id is echoed back and written to `audit_event.trace_id`,
+#: which is String(32). Accepting the header verbatim means a caller controls
+#: the contents of a log field and an indexed column, and an over-long value is
+#: a database error on the audit write rather than on the request that caused
+#: it. Bounded and restricted to characters that cannot break a log line; a
+#: header that does not conform is replaced rather than rejected, because the
+#: request itself is fine and refusing it would be a worse trade.
+_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def _accept_request_id(supplied: str | None) -> str:
+    if supplied and _SAFE_REQUEST_ID.match(supplied):
+        return supplied
+    return uuid.uuid4().hex
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
 
@@ -63,7 +81,7 @@ def create_app() -> FastAPI:
     async def bind_request_context(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        request_id = request.headers.get(REQUEST_ID_HEADER) or uuid.uuid4().hex
+        request_id = _accept_request_id(request.headers.get(REQUEST_ID_HEADER))
         structlog.contextvars.bind_contextvars(
             request_id=request_id,
             path=request.url.path,
@@ -71,6 +89,17 @@ def create_app() -> FastAPI:
         )
         try:
             response = await call_next(request)
+        except Exception:
+            # The 500 is the response most in need of a correlation id, and it
+            # is the one that would not have had one: assigning the header after
+            # the call cannot run when the call raises, and Starlette's
+            # ServerErrorMiddleware sits outside this and builds its own reply.
+            # So this builds the reply, with the id on it.
+            log.exception("request.unhandled_error")
+            response = JSONResponse(
+                status_code=500,
+                content={"detail": "internal server error", "request_id": request_id},
+            )
         finally:
             structlog.contextvars.clear_contextvars()
         response.headers[REQUEST_ID_HEADER] = request_id

@@ -25,11 +25,19 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select, text
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from threshold.domain.extraction import RESTRICTED_FIELD_KEYS, redacted_fields
 from threshold.domain.matching import Disposition
-from threshold.domain.models import Document, Extraction, MatchException, MatchResult, Vendor
+from threshold.domain.models import (
+    AuditEvent,
+    Document,
+    Extraction,
+    MatchException,
+    MatchResult,
+    Vendor,
+)
 from threshold.domain.taxonomy import ExceptionCode, OwnerRole
 from threshold.services.matching import MatchingError, MatchingService
 
@@ -611,3 +619,93 @@ class TestPaymentDetails:
         projected = redacted_fields(fields)
         assert not (RESTRICTED_FIELD_KEYS & set(projected))
         assert "invoice_number" in projected, "redaction must not gut the projection"
+
+
+class TestTheDecisionRecordsItself:
+    """`match.decided` is written in the same transaction as the rows it describes.
+
+    models.py has claimed since M0 that every state transition writes an audit
+    event. The most consequential transition in the system — deciding whether an
+    invoice may be paid without a human — emitted a structlog line and nothing
+    else, so the claim was false exactly where it mattered most.
+    """
+
+    async def test_a_decision_writes_one_audit_row(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        async with sessions() as session:
+            document = await _document_with_extraction(
+                session, _invoice_fields(invoice_number=f"AUDIT-{uuid.uuid4().hex[:8]}")
+            )
+            result = await MatchingService().match_document(session, document.id)
+            await session.flush()
+
+            events = (
+                (
+                    await session.execute(
+                        select(AuditEvent)
+                        .where(AuditEvent.entity_id == result.id)
+                        .where(AuditEvent.action == "match.decided")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            await session.commit()
+
+        assert len(events) == 1
+        after = events[0].after or {}
+        assert events[0].actor_type == "system"
+        assert events[0].entity_type == "match_result"
+        assert after["disposition"] == Disposition.AUTO_APPROVE.value
+        assert after["policy_version"] == "2026.09.1"
+        assert after["exception_codes"] == []
+
+    async def test_the_row_lists_the_codes_that_blocked_it(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        """So "why did this block" is answerable from the audit trail alone."""
+        async with sessions() as session:
+            document = await _document_with_extraction(
+                session,
+                _invoice_fields(
+                    invoice_number=f"AUDITX-{uuid.uuid4().hex[:8]}", unit_price="21.0000"
+                ),
+            )
+            result = await MatchingService().match_document(session, document.id)
+            await session.flush()
+            event = (
+                await session.execute(
+                    select(AuditEvent)
+                    .where(AuditEvent.entity_id == result.id)
+                    .where(AuditEvent.action == "match.decided")
+                )
+            ).scalar_one()
+            after = event.after or {}
+            await session.commit()
+
+        assert after["disposition"] == Disposition.BLOCKED.value
+        assert after["exception_codes"] == [ExceptionCode.PRICE_VARIANCE.value]
+
+    async def test_the_audit_row_cannot_be_edited_afterwards(
+        self, sessions: async_sessionmaker[AsyncSession], cleanup: None
+    ) -> None:
+        """The append-only trigger, applied to the new call site."""
+        async with sessions() as session:
+            document = await _document_with_extraction(
+                session, _invoice_fields(invoice_number=f"IMMUT-{uuid.uuid4().hex[:8]}")
+            )
+            result = await MatchingService().match_document(session, document.id)
+            await session.commit()
+
+        async with sessions() as session:
+            with pytest.raises(Exception, match=r"append-only|restrict|cannot"):
+                await session.execute(
+                    sa_text(
+                        "UPDATE audit_event SET action = 'tampered' "
+                        "WHERE entity_id = :entity AND action = 'match.decided'"
+                    ),
+                    {"entity": result.id},
+                )
+                await session.commit()
+            await session.rollback()

@@ -36,7 +36,8 @@ from threshold.adapters.extraction.port import Extractor
 from threshold.adapters.object_store import ObjectStore, storage_key_for
 from threshold.adapters.queue import Queue
 from threshold.domain.jobs import JobKind
-from threshold.domain.models import AuditEvent, Document, Extraction
+from threshold.domain.models import Document, Extraction
+from threshold.services.audit import Actor, record
 
 log = structlog.get_logger(__name__)
 
@@ -152,18 +153,17 @@ class IngestService:
             session.add(document)
             await session.flush()
 
-            session.add(
-                AuditEvent(
-                    actor_type="system",
-                    action="document.received",
-                    entity_type="document",
-                    entity_id=document.id,
-                    after={
-                        "content_sha256": digest,
-                        "byte_size": len(content),
-                        "source": source,
-                    },
-                )
+            await record(
+                session,
+                actor=Actor.system(),
+                action="document.received",
+                entity_type="document",
+                entity_id=document.id,
+                after={
+                    "content_sha256": digest,
+                    "byte_size": len(content),
+                    "source": source,
+                },
             )
             created = True
             log.info("ingest.stored", document_id=str(document.id), bytes=len(content))
@@ -263,19 +263,18 @@ class IngestService:
         session.add(extraction)
         await session.flush()
 
-        session.add(
-            AuditEvent(
-                actor_type="system",
-                action="document.extracted",
-                entity_type="extraction",
-                entity_id=extraction.id,
-                after={
-                    "document_id": str(document.id),
-                    "version": next_version,
-                    "extractor_id": result.extractor_id,
-                    "lowest_decision_confidence": str(confidence),
-                },
-            )
+        await record(
+            session,
+            actor=Actor.system(),
+            action="document.extracted",
+            entity_type="extraction",
+            entity_id=extraction.id,
+            after={
+                "document_id": str(document.id),
+                "version": next_version,
+                "extractor_id": result.extractor_id,
+                "lowest_decision_confidence": str(confidence),
+            },
         )
 
         log.info(
