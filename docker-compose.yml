@@ -169,7 +169,9 @@ services:
     build:
       context: .
       target: runtime
-    environment: *app-env
+    environment:
+      <<: *app-env
+      THRESHOLD_SERVICE_NAME: threshold-api
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -231,7 +233,9 @@ services:
     build:
       context: .
       target: runtime
-    environment: *app-env
+    environment:
+      <<: *app-env
+      THRESHOLD_SERVICE_NAME: threshold-worker
     depends_on:
       migrate:
         condition: service_completed_successfully

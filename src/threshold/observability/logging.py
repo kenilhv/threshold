@@ -50,9 +50,38 @@ def _redact(
     return event_dict
 
 
+def _add_trace_context(
+    _logger: object, _method: str, event_dict: structlog.types.EventDict
+) -> structlog.types.EventDict:
+    """Stamp the active trace and span onto every line.
+
+    A processor rather than a contextvar bound per request, for two reasons.
+    The span id changes with every child span, so binding it once per request
+    would attach the wrong one to most lines. And the worker has no request and
+    no middleware, but it does call `configure_logging` -- so this is the only
+    way its lines carry a trace at all.
+
+    Imported here rather than at module scope: `logging.py` is imported by the
+    seed scripts and the fixture generators, and none of them should pull in the
+    tracing SDK to print a line.
+    """
+    from threshold.observability.tracing import current_trace_id
+
+    trace_id = current_trace_id()
+    if trace_id is not None:
+        from opentelemetry import trace as _trace
+
+        event_dict["trace_id"] = trace_id
+        event_dict["span_id"] = _trace.format_span_id(
+            _trace.get_current_span().get_span_context().span_id
+        )
+    return event_dict
+
+
 def configure_logging(settings: Settings) -> None:
     shared: list[Any] = [
         structlog.contextvars.merge_contextvars,
+        _add_trace_context,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso", utc=True),

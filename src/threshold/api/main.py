@@ -1,9 +1,14 @@
 """FastAPI application.
 
 Request IDs are generated here and bound into the structured log context, so
-every log line for a request shares one id. In M5 this same id becomes the
-OpenTelemetry trace id and lands in ``audit_event.trace_id``, which is what
-makes a compliance question and a latency question answerable from one row.
+every log line for a request shares one id.
+
+The request id and the trace id are deliberately different things. A caller
+chooses the request id -- `smoke-test-id` is a real one -- so it can never be
+the 32 lowercase hex characters a W3C trace id is, and an earlier version of
+this docstring promised it would become one. It stays what it is: an identifier
+a caller can quote back when asking about their own request. The trace id comes
+from the span, and it is what `audit_event.trace_id` records.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from threshold.adapters.db import dispose_engine, init_engine
 from threshold.api.routes import approvals, documents, health, identity
 from threshold.config.settings import get_settings
 from threshold.observability.logging import configure_logging
+from threshold.observability.tracing import configure_tracing
 
 log = structlog.get_logger(__name__)
 
@@ -109,6 +115,16 @@ def create_app() -> FastAPI:
     app.include_router(identity.router, prefix="/v1")
     app.include_router(documents.router)
     app.include_router(approvals.router)
+
+    # Logging first: `create_app` runs at import, so anything configure_tracing
+    # logs would otherwise be rendered with structlog's defaults -- a
+    # human-readable line in an environment whose whole contract is JSON.
+    configure_logging(settings)
+
+    # Here, and specifically NOT in the lifespan. Instrumenting from the
+    # lifespan does not fail -- it silently records nothing, because
+    # Starlette has already built its middleware stack by then.
+    configure_tracing(settings, app=app)
     return app
 
 

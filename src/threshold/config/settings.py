@@ -33,6 +33,12 @@ class Settings(BaseSettings):
 
     redis_url: RedisDsn
 
+    #: Where traces and metrics are sent. None is a supported configuration,
+    #: not a broken one: the SDK still produces valid spans, so audit rows and
+    #: log lines still correlate, and nothing is exported. That is the right
+    #: default for a unit test and for a laptop with no collector running.
+    otel_exporter_otlp_endpoint: str | None = None
+
     # S3-compatible. Locally this is MinIO; in AWS only the endpoint and the
     # credential source change, which is the whole point of using boto3 here
     # rather than a MinIO-specific client.
