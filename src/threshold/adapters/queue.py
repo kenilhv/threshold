@@ -33,9 +33,10 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, Final, Protocol, cast, runtime_checkable
 
 import structlog
+from opentelemetry.propagate import inject
 from sqlalchemy import CursorResult, Select, delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,6 +51,41 @@ from threshold.domain.jobs import (
 from threshold.domain.models import DeadLetter, Job
 
 log = structlog.get_logger(__name__)
+
+#: Where the trace rides across the queue.
+#:
+#: The payload rather than a column, which is the weaker choice on two axes --
+#: a column would be queryable and would keep the payload purely business data
+#: -- and the right one here. A column needs a migration, a `ClaimedJob` field,
+#: an entry in claim()'s RETURNING list, an explicit copy in fail() and a
+#: decision in replay(); this repository already contains proof that such copy
+#: paths get missed, because `DeadLetter.dedupe_key` is declared and nothing has
+#: ever written it. The payload needs none of that: it survives dead-lettering
+#: and replay because fail() copies it verbatim, and a handler that has never
+#: heard of these keys ignores them.
+#:
+#: Underscore-prefixed because they are transport metadata, not business data.
+TRACEPARENT_KEY: Final = "_traceparent"
+
+#: Set by replay only. A replayed job is a human decision taken possibly days
+#: later with a fresh attempt budget, so it starts its own trace and merely
+#: points back at the one that died. Without this, a replay silently rejoins a
+#: trace from last week and the new work appears to have taken six days.
+LINKED_TRACEPARENT_KEY: Final = "_linked_traceparent"
+
+
+def _with_trace_context(payload: dict[str, Any]) -> dict[str, Any]:
+    """Copy the payload with the current trace context attached.
+
+    A copy, not a mutation: the caller's dict belongs to the caller, and
+    ingest passes one it also logs.
+    """
+    carrier: dict[str, str] = {}
+    inject(carrier)
+    traceparent = carrier.get("traceparent")
+    if traceparent is None:
+        return payload
+    return {**payload, TRACEPARENT_KEY: traceparent}
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,10 +194,13 @@ class PostgresJobQueue:
         state change that motivated it. That is the entire reason this is a
         table and not a broker: enqueue and state change commit together, so
         there is no window in which one happened and the other did not.
+
+        The current trace context is attached to the payload here rather than at
+        each call site, so a new producer cannot forget it.
         """
         values: dict[str, Any] = {
             "kind": kind.value,
-            "payload": payload,
+            "payload": _with_trace_context(payload),
             "dedupe_key": dedupe_key,
             "max_attempts": max_attempts,
         }
@@ -422,10 +461,20 @@ class PostgresJobQueue:
         if letter is None:
             return None
 
+        # A replay is a new trace, linked to the dead one rather than joined
+        # to it. The original context is days old by the time a human decides to
+        # replay; inheriting it would make the retry look like a six-day
+        # operation and would bury today's work inside last week's trace.
+        payload = dict(letter.payload)
+        died_in = payload.pop(TRACEPARENT_KEY, None)
+        payload.pop(LINKED_TRACEPARENT_KEY, None)
+        if died_in is not None:
+            payload[LINKED_TRACEPARENT_KEY] = died_in
+
         job_id = await self.enqueue(
             session,
             kind=JobKind(letter.kind),
-            payload=letter.payload,
+            payload=payload,
             # Deliberately no dedupe key: the original may still hold it, and a
             # replay is an explicit human decision to run this again.
             dedupe_key=None,

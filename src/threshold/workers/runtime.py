@@ -26,13 +26,19 @@ import os
 import socket
 import uuid
 from datetime import timedelta
-from typing import Final
+from typing import Any, Final
 
 import structlog
+from opentelemetry import trace
+from opentelemetry.context import Context
+from opentelemetry.propagate import extract
+from opentelemetry.trace import Link, SpanKind
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from threshold.adapters.db import session_scope
 from threshold.adapters.queue import (
+    LINKED_TRACEPARENT_KEY,
+    TRACEPARENT_KEY,
     ClaimedJob,
     PostgresJobQueue,
     ReapableQueue,
@@ -42,6 +48,43 @@ from threshold.domain.jobs import PermanentJobError, TransientJobError
 from threshold.workers.handlers import HANDLERS
 
 log = structlog.get_logger(__name__)
+
+_tracer = trace.get_tracer(__name__)
+
+
+def _job_context(payload: dict[str, Any]) -> tuple[Context | None, list[Link]]:
+    """Where this job's span belongs in the trace graph.
+
+    Continuing the producer's trace is a deliberate override of the usual
+    messaging guidance, which prefers a link because a consumer may run
+    arbitrarily later. The bounds here are known rather than assumed: three
+    attempts including the first, five then ten seconds of backoff, a one-second
+    poll and a two-minute lease with a thirty-second reaper -- tens of seconds
+    typically and a few minutes after two crash-and-reap cycles. Against that,
+    linking would give one invoice four different trace ids across its four
+    audit rows, and "the same id as the distributed trace" is the promise this
+    milestone exists to make true.
+
+    That trade is only valid while those bounds hold. A longer backoff, a bigger
+    attempt budget, or jobs scheduled hours ahead invalidate it and it must be
+    decided again rather than inherited. See D-021.
+
+    A replayed job is the exception and gets a new trace with a link, because a
+    human chose to run it again, possibly days later.
+    """
+    traceparent = payload.get(TRACEPARENT_KEY)
+    if isinstance(traceparent, str):
+        return extract({"traceparent": traceparent}), []
+
+    linked = payload.get(LINKED_TRACEPARENT_KEY)
+    if isinstance(linked, str):
+        context = trace.get_current_span(extract({"traceparent": linked})).get_span_context()
+        if context.is_valid:
+            return None, [Link(context)]
+
+    # A job enqueued before this existed, or one produced with no active trace.
+    return None, []
+
 
 #: How long to wait when the queue is empty. Short enough that work starts
 #: promptly, long enough that an idle pool is not hammering Postgres. At eight
@@ -159,12 +202,31 @@ class WorkerRuntime:
             return
 
         bound = log.bind(job_id=str(job.id), kind=job.kind, attempt=job.attempts)
+        context, links = _job_context(job.payload)
         try:
             # One transaction: the handler's writes and the success marker
             # commit together, so the queue can never disagree with the work.
-            async with session_scope(self._sessions) as session:
-                await handler(session, job.payload)
-                await self._queue.succeed(session, job.id, worker_id=self.identity)
+            #
+            # The span wraps the transaction rather than sitting inside the
+            # handler, so every audit row the handler writes inherits the trace
+            # -- which is the whole point of carrying it across the queue.
+            with _tracer.start_as_current_span(
+                f"process {job.kind}",
+                context=context,
+                links=links,
+                kind=SpanKind.CONSUMER,
+                attributes={
+                    "messaging.system": "postgresql",
+                    "messaging.destination.name": "job",
+                    "messaging.message.id": str(job.id),
+                    "messaging.operation.name": "process",
+                    "threshold.job.kind": job.kind,
+                    "threshold.job.attempt": job.attempts,
+                },
+            ):
+                async with session_scope(self._sessions) as session:
+                    await handler(session, job.payload)
+                    await self._queue.succeed(session, job.id, worker_id=self.identity)
             bound.info("worker.job_succeeded")
 
         except PermanentJobError as exc:
