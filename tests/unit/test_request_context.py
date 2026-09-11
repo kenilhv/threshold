@@ -1,9 +1,14 @@
-"""The request id, which is also `audit_event.trace_id`.
+"""The request id, and the trace id it is no longer mistaken for.
 
-An inbound header is echoed back, bound to every log line for the request, and
-written to an indexed `String(32)` column. Accepting it verbatim meant a caller
-controlled all three, and an over-long value surfaced as a database error on the
-audit write rather than on the request that caused it.
+An inbound header is echoed back to the caller and bound to every log line for
+the request. Accepting it verbatim meant a caller controlled both, and an
+over-long value surfaced as a database error rather than on the request that
+caused it -- so it is bounded and replaced rather than rejected.
+
+It used to be written to `audit_event.trace_id` as well, because before M5 it
+was the only correlation id that existed. It is not written there any more: a
+caller-chosen string cannot be a W3C trace id, and the column has always
+promised to be one.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import pytest
 import structlog
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from opentelemetry import trace
 
 from threshold.api.main import REQUEST_ID_HEADER, _accept_request_id
 from threshold.services.audit import current_trace_id
@@ -96,26 +102,41 @@ class TestTheHeaderSurvivesFailure:
 
 
 class TestTraceId:
-    def test_it_reads_the_bound_request_id(self) -> None:
+    """The audit column now holds a trace id, not the request id.
+
+    These two used to be the same value, because before M5 the request id was
+    the only correlation identifier that existed. They are different things: a
+    caller chooses the request id, so it can never be 32 lowercase hex, and
+    ARCHITECTURE.md has promised since M0 that audit_event.trace_id is "the same
+    id as the distributed trace".
+    """
+
+    def test_it_comes_from_the_span(self) -> None:
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+        with provider.get_tracer("probe").start_as_current_span("s") as span:
+            trace_id = current_trace_id()
+        assert trace_id == trace.format_trace_id(span.get_span_context().trace_id)
+        assert len(trace_id or "") == 32
+
+    def test_a_bound_request_id_does_not_become_the_trace_id(self) -> None:
+        """The regression this replaces: the column used to hold whatever the
+        caller sent, so an audit row could claim a trace named "smoke-test-id".
+        """
         structlog.contextvars.clear_contextvars()
-        assert current_trace_id() is None
-        structlog.contextvars.bind_contextvars(request_id="abc123")
+        structlog.contextvars.bind_contextvars(request_id="smoke-test-id")
         try:
-            assert current_trace_id() == "abc123"
+            assert current_trace_id() is None
         finally:
             structlog.contextvars.clear_contextvars()
 
-    def test_it_is_none_outside_a_request(self) -> None:
-        """The worker has no request, and saying so is better than inventing one."""
+    def test_it_is_none_outside_a_span(self) -> None:
+        """The worker, until the next increment carries a trace across the queue."""
         structlog.contextvars.clear_contextvars()
         assert current_trace_id() is None
-
-    def test_it_never_exceeds_the_column(self) -> None:
-        structlog.contextvars.clear_contextvars()
-        structlog.contextvars.bind_contextvars(request_id="y" * 200)
-        try:
-            trace = current_trace_id()
-            assert trace is not None
-            assert len(trace) <= 32
-        finally:
-            structlog.contextvars.clear_contextvars()

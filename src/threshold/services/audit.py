@@ -29,19 +29,17 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Any, Final, Literal
+from typing import Any, Literal
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from threshold.domain.models import AuditEvent
+from threshold.observability.tracing import current_trace_id as _span_trace_id
 
 log = structlog.get_logger(__name__)
 
 ActorType = Literal["system", "human", "agent"]
-
-#: `AuditEvent.trace_id` is String(32).
-_TRACE_ID_MAX: Final = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,17 +63,22 @@ class Actor:
 
 
 def current_trace_id() -> str | None:
-    """The request id bound by the API middleware, if this is a request.
+    """The active trace id: 32 lowercase hex, or ``None`` outside a trace.
 
-    Returns ``None`` in the worker, which has no request. That is honest rather
-    than convenient: a worker's audit rows genuinely have no request to
-    correlate to until M5 propagates a trace through the queue payload.
+    This used to hold the request id, which was the closest thing available
+    before there were traces. The two are not interchangeable. A caller chooses
+    the request id -- ``smoke-test-id`` is one this repository really sends --
+    so it can never be a W3C trace id, and ``ARCHITECTURE.md`` has promised
+    since M0 that this column is "the same id as the distributed trace". It is
+    now.
+
+    The caller-facing request id is not stored on the row. It stays on every log
+    line for the request, beside this trace id, which is where the two are
+    joined. Keeping a second column was considered and rejected: the audit table
+    is the durable record and a trace id is the durable identifier, whereas a
+    request id is a handle for one conversation. See D-020.
     """
-    bound: dict[str, Any] = structlog.contextvars.get_contextvars()
-    value = bound.get("request_id")
-    if not isinstance(value, str) or not value:
-        return None
-    return value[:_TRACE_ID_MAX]
+    return _span_trace_id()
 
 
 async def record(
