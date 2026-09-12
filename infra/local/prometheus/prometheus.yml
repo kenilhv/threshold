@@ -15,6 +15,17 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# The nine alert rules, and no Alertmanager.
+#
+# Routing and notification are a separate concern with separate failure modes,
+# and a local Alertmanager that delivers to nowhere would prove nothing that
+# Prometheus's own /api/v1/alerts does not. What is worth building here is the
+# rules and the evidence that they are right, which is
+# `infra/local/prometheus/alerts_test.yml` -- every rule proved to fire, and
+# proved to stay quiet when the system is merely busy.
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   # Prometheus watching itself. Everything else pushes.
   - job_name: prometheus

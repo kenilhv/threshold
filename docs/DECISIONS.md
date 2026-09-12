@@ -5,6 +5,75 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-026 — Nine alert rules, each proved to fire and proved to stay quiet
+
+**Date:** 2026-09-11 · **Status:** accepted
+
+Alerting does not die from a missed page. It dies from a rule that fires during
+normal operation until people stop reading it, and by then the rules that would
+have mattered are in the same folder as the one that cried wolf. So every rule
+here appears twice in `alerts_test.yml`: once with input that must make it fire,
+and once with input that must not — and the negative case is deliberately close
+to the positive one. A queue that is busy rather than stuck. An API with a real
+but acceptable error rate. An invoice mix that is worse than usual but still
+automating. For `OldestJobStuck`, the exact worst case the design is allowed to
+produce: three minutes, being two backoffs plus a crash-and-reap cycle, which
+must not wake anyone.
+
+The tests run under Prometheus's own `promtool` against the pinned image that
+serves the stack, because the rules are PromQL and only Prometheus can say what
+PromQL means. `make verify` runs them.
+
+**Two of the negative tests were passing for the wrong reason**, and mutation
+testing is what found it. `ApiErrorRate` and `AutoApprovalRateCollapsed` each
+carry a denominator guard — a floor on request rate, a floor on decision volume
+— without which they page every quiet night about arithmetic on a near-zero
+divided by a near-zero. Both negative tests used flat counters, so the numerator
+was zero as well, the ratio was `0/0`, and no alert fired for reasons entirely
+unrelated to the guard. Deleting the guard changed nothing and the suite stayed
+green. The inputs now move: an API where *every* request is a 5xx at one request
+a minute, and a night with twelve invoices and no auto-approvals. Both tests
+fail without the guard, which is what they were always supposed to assert.
+
+Seven mutations were applied and watched to fail before the rules were kept,
+including a threshold moved until the healthy case pages, a ratio quietly
+rewritten as a rate, and a runbook link pointed at a file that does not exist.
+
+**`make demo-alert` changed a rule.** The demo stops the worker and watches
+`QueueObserverStopped`, and the first run showed it reaching `pending` at
+t+337s rather than immediately. The reason is that a *pushed* series does not
+become absent when the pusher stops — it becomes absent when Prometheus's
+five-minute lookback passes the last sample. The expression was therefore
+already carrying five minutes of hysteresis, and the rule's own `for: 5m` on top
+made the true detection latency for a dead worker **ten minutes**. It is now
+`for: 2m`, so a page arrives about seven minutes after the pool dies, and the
+arithmetic is written next to the rule. Nothing but running it would have shown
+this: the rule was correct, its tests passed, and the number that mattered was
+the sum of two waits in different systems.
+
+Every rule links to a runbook and a test asserts the file exists, because a dead
+link is discovered by the person least able to cope with it — someone paged at
+3am, following the link precisely because they do not already know the answer.
+Six runbooks serve the nine alerts, each opening with the alerts it covers, what
+normal looks like in measured numbers, how to tell the cases apart, and a
+"what not to do" section. Two of those matter more than the diagnosis: do not
+clear the queue, and do not widen tolerances to silence
+`AutoApprovalRateCollapsed`, which converts a visible problem into invoices
+clearing that should not have.
+
+The registry now closes both loops. `MetricSpec` names the dashboard panels and
+the alert rules that read each metric, and tests assert in both directions:
+every declared consumer exists, and every panel and every rule is claimed by a
+metric. An alert nobody's metric claims evaluates forever without firing and
+looks exactly like a rule that is working.
+
+There is **no Alertmanager**. Routing and notification are a separate concern
+with separate failure modes, and a local Alertmanager delivering to nowhere
+would prove nothing that Prometheus's own `/api/v1/alerts` does not. What was
+worth building is the rules and the evidence that they are right.
+
+---
+
 ## D-025 — Readiness checks what the service uses, and never the identity provider
 
 **Date:** 2026-09-11 · **Status:** accepted · **Fixed**

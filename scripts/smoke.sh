@@ -278,6 +278,17 @@ check "both services are reporting metrics" "2" \
 check "every declared metric reached Prometheus" "0" \
   "$(python scripts/check_metrics.py 2>/dev/null)"
 
+# The rules are loaded, not merely written. A rules file with a typo in a
+# path is a file Prometheus never reads, and it says so once at startup and
+# then never again.
+check "the alert rules are loaded" "9" \
+  "$(curl -s --max-time 10 "$PROM/api/v1/rules" | python -c 'import json,sys; print(sum(len(g["rules"]) for g in json.load(sys.stdin)["data"]["groups"]))' 2>/dev/null)"
+
+# No rule may be in `unknown` or `err` state: a rule whose expression fails
+# to evaluate never fires and looks identical to a quiet one.
+check "every alert rule evaluates" "0" \
+  "$(curl -s --max-time 10 "$PROM/api/v1/rules" | python -c 'import json,sys; rules=[r for g in json.load(sys.stdin)["data"]["groups"] for r in g["rules"]]; print(len([r for r in rules if r.get("health") != "ok"]))' 2>/dev/null)"
+
 check "the dashboard is provisioned" "threshold-overview" \
   "$(curl -s --max-time 10 "$GRAFANA/api/search?type=dash-db" | python -c 'import json,sys; print(next((d["uid"] for d in json.load(sys.stdin) if d["uid"]=="threshold-overview"), "missing"))' 2>/dev/null)"
 

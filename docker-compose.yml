@@ -266,6 +266,7 @@ services:
       - --web.enable-otlp-receiver
     volumes:
       - ./infra/local/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/local/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"

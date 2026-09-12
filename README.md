@@ -42,7 +42,8 @@ loads reference data, then starts the API, the worker and the console.
 | Keycloak | <http://localhost:8080> — `admin` / `admin` |
 | Dashboards | <http://localhost:3001> — Grafana, no login. Decisions, queue, API. |
 | Traces | <http://localhost:3200> — Tempo. One invoice is one trace across both services. |
-| Metrics | <http://localhost:9090> — Prometheus, receiving OTLP rather than scraping. |
+| Metrics | <http://localhost:9090> — Prometheus, receiving OTLP rather than scraping. Nine alert rules, each proved to fire and proved to stay quiet. |
+| Runbooks | [docs/runbooks](docs/runbooks) — what to do when one of them pages. `make demo-alert` makes one fire. |
 | **Console** | <http://localhost:3000> — sign in as `clerk`, `buyer`, `receiving`, `treasury`, `controller` or `auditor` |
 
 The seeded users' passwords are their usernames. That is a local fixture and
@@ -182,7 +183,20 @@ Full reasoning, including what is deliberately *not* distributed and why:
       if you own every open exception on it. The console is a back-end for
       front-end — the browser never holds a token — and works with JavaScript
       disabled.
-- [ ] M5 — OpenTelemetry end to end, dashboards, alert rules, runbooks
+- [x] **M5 — observability that can be checked.** One invoice is one trace
+      across two processes and two queue hops, and the trace id on every audit
+      row resolves in Tempo to the whole story — including the SQL spans, which
+      were silently missing until a metrics test asked why a declared metric had
+      never been produced. Metrics sit behind a registry the SDK enforces: an
+      undeclared label is dropped before export, and the histogram buckets come
+      from measured distributions rather than defaults that would have put every
+      number this system produces in one bucket. Every metric names the
+      dashboard panels and alert rules that read it, and tests assert in both
+      directions, because a metric nobody plots is this repository's oldest
+      defect wearing a new hat. Readiness checks what the service actually uses
+      and deliberately never the identity provider. Nine alert rules, each with
+      a test that makes it fire and a test that keeps it quiet, and six runbooks
+      that are checked to exist.
 - [ ] M6 — evaluation harness, calibration curve, CI regression gate
 - [ ] M7 — the triage agent and its injection red-team suite
 - [ ] M8 — idempotent payments and a double-entry ledger

@@ -1,0 +1,334 @@
+# Unit tests for the alert rules, run by `promtool test rules`.
+#
+# Every rule appears twice: once with input that must make it fire, and once
+# with input that must not. The negative half is the half that matters. A rule
+# only ever seen to fire is a rule nobody knows the quiet behaviour of, and the
+# way alerting dies is not a missed page -- it is a rule that pages during
+# normal operation until people stop reading it.
+#
+# The negative cases are therefore deliberately close to the positive ones:
+# a queue that is busy rather than stuck, an API with a real but acceptable
+# error rate, an invoice mix that is worse than usual but not broken, and for
+# OldestJobStuck the exact worst case the design is allowed to produce.
+
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ------------------------------------------------------------------ queue
+  - name: the queue observer stops publishing
+    interval: 1m
+    input_series:
+      # Deliberately not queue depth: something else must be reporting, so the
+      # test proves absent() noticed THIS series rather than an empty database.
+      - series: 'threshold_job_dead_letters'
+        values: "0+0x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: QueueObserverStopped
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: queue
+            exp_annotations:
+              summary: "No worker is reporting queue depth"
+              description: "Queue depth has not been published for five minutes. One worker publishes it, elected by the reaper's advisory lock, so this means the pool has no live member or the elected one is wedged. Nothing is draining the queue and no other queue alert can fire while this is true."
+              runbook_url: "docs/runbooks/telemetry-blind.md"
+
+  - name: the queue observer is publishing, even when the queue is empty
+    interval: 1m
+    input_series:
+      # Zero, not absent. The gauge reports zero for an empty queue precisely so
+      # that this case cannot look like a dead observer.
+      - series: 'threshold_job_queue_depth{state="pending"}'
+        values: "0+0x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: QueueObserverStopped
+        exp_alerts: []
+
+  - name: a job has been waiting far longer than the design allows
+    interval: 1m
+    input_series:
+      - series: "threshold_job_queue_oldest_age_seconds"
+        values: "400+0x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OldestJobStuck
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: queue
+            exp_annotations:
+              summary: "A claimable job has been waiting more than five minutes"
+              description: "The oldest claimable job is 6m 40s old. The measured median wait is 0.5s and the worst case the design produces -- two backoffs plus a crash and a reap -- is about three minutes."
+              runbook_url: "docs/runbooks/queue-backlog.md"
+
+  - name: a job waited the worst case the design produces and did not page
+    interval: 1m
+    input_series:
+      # Three minutes: two backoffs plus a crash-and-reap cycle. This is the
+      # slowest a healthy system gets, and it must not wake anyone.
+      - series: "threshold_job_queue_oldest_age_seconds"
+        values: "180+0x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OldestJobStuck
+        exp_alerts: []
+
+  - name: the queue is not draining
+    interval: 1m
+    input_series:
+      - series: 'threshold_job_queue_depth{state="pending"}'
+        values: "150+0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: QueueBacklogGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              component: queue
+              state: pending
+            exp_annotations:
+              summary: "The queue is not draining"
+              description: "150 jobs are pending and have been for ten minutes. Steady state is zero. Either arrival has outrun the pool or something is failing and returning work to pending."
+              runbook_url: "docs/runbooks/queue-backlog.md"
+
+  - name: the queue is busy but keeping up
+    interval: 1m
+    input_series:
+      - series: 'threshold_job_queue_depth{state="pending"}'
+        values: "50+0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: QueueBacklogGrowing
+        exp_alerts: []
+
+  - name: jobs are being dead-lettered
+    interval: 1m
+    input_series:
+      - series: 'threshold_job_duration_seconds_count{outcome="dead_lettered", kind="extract_document"}'
+        values: "0+2x40"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: JobsDeadLettering
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: queue
+            exp_annotations:
+              summary: "Jobs are being dead-lettered"
+              description: "0.033 jobs per second have exhausted their attempts or failed permanently over the last fifteen minutes. These invoices are not being processed and no retry will pick them up."
+              runbook_url: "docs/runbooks/dead-letters.md"
+
+  - name: dead letters exist but none are new
+    interval: 1m
+    input_series:
+      # The counter is flat: jobs died earlier and nothing is dying now. This is
+      # the DeadLettersUnreplayed case, not the JobsDeadLettering one, and the
+      # two must not fire together.
+      - series: 'threshold_job_duration_seconds_count{outcome="dead_lettered", kind="extract_document"}'
+        values: "12+0x40"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: JobsDeadLettering
+        exp_alerts: []
+
+  - name: dead letters have gone unreplayed for an hour
+    interval: 5m
+    input_series:
+      - series: "threshold_job_dead_letters"
+        values: "5+0x20"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: DeadLettersUnreplayed
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              component: queue
+            exp_annotations:
+              summary: "Dead letters are waiting for a human"
+              description: "5 dead letters have gone unreplayed for an hour. Each one is an invoice that entered the system and stopped. `make dlq` lists them; `make replay id=<uuid>` puts one back."
+              runbook_url: "docs/runbooks/dead-letters.md"
+
+  - name: the dead letter queue is empty
+    interval: 5m
+    input_series:
+      - series: "threshold_job_dead_letters"
+        values: "0+0x20"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: DeadLettersUnreplayed
+        exp_alerts: []
+
+  # -------------------------------------------------------------- decisions
+  - name: the automation rate collapses
+    interval: 1m
+    input_series:
+      - series: 'threshold_match_decisions_total{disposition="auto_approve", policy_version="2026.09.1"}'
+        values: "0+1x120"
+      - series: 'threshold_match_decisions_total{disposition="blocked", policy_version="2026.09.1"}'
+        values: "0+9x120"
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: AutoApprovalRateCollapsed
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              component: decisions
+            exp_annotations:
+              summary: "Automation rate has collapsed"
+              description: "Only 10% of invoices cleared without a person over the last hour, against a baseline near 40%. The usual causes are a tolerance policy change, a vendor master that stopped resolving, or a purchase order feed that stopped arriving."
+              runbook_url: "docs/runbooks/automation-rate.md"
+
+  - name: the invoice mix is worse than usual but still automating
+    interval: 1m
+    input_series:
+      - series: 'threshold_match_decisions_total{disposition="auto_approve", policy_version="2026.09.1"}'
+        values: "0+3x120"
+      - series: 'threshold_match_decisions_total{disposition="blocked", policy_version="2026.09.1"}'
+        values: "0+7x120"
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: AutoApprovalRateCollapsed
+        exp_alerts: []
+
+  - name: a quiet night does not page about arithmetic
+    interval: 5m
+    input_series:
+      # Twelve invoices an hour, none of them auto-approved. The ratio is 0,
+      # which is below the threshold, so the denominator guard is the only thing
+      # stopping this from paging every night the system is idle.
+      #
+      # As with the API case above, the first version had both counters flat:
+      # the ratio was 0/0, no alert fired for reasons unrelated to the guard,
+      # and removing the guard changed nothing. This one fails without it.
+      - series: 'threshold_match_decisions_total{disposition="auto_approve", policy_version="2026.09.1"}'
+        values: "0+0x30"
+      - series: 'threshold_match_decisions_total{disposition="blocked", policy_version="2026.09.1"}'
+        values: "0+1x30"
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: AutoApprovalRateCollapsed
+        exp_alerts: []
+
+  - name: every invoice is raising blocking exceptions
+    interval: 1m
+    input_series:
+      - series: 'threshold_match_exceptions_total{severity="block", code="po_not_found", owner_role="buyer"}'
+        values: "0+40x60"
+      - series: 'threshold_match_decisions_total{disposition="blocked", policy_version="2026.09.1"}'
+        values: "0+10x60"
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: BlockingExceptionSurge
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              component: decisions
+            exp_annotations:
+              summary: "Invoices are raising an unusual number of blocking exceptions"
+              description: "4.0 blocking exceptions per invoice over fifteen minutes. This is a ratio, so it is not explained by volume. Group by code on the \"Exceptions by owner\" panel to see which control is firing."
+              runbook_url: "docs/runbooks/exception-surge.md"
+
+  - name: volume doubled and the exception ratio did not
+    interval: 1m
+    input_series:
+      # Twice the traffic of the case above and twice the exceptions. A rule
+      # written as a rate rather than a ratio would fire here, which is the
+      # mistake this one is shaped to avoid.
+      - series: 'threshold_match_exceptions_total{severity="block", code="po_not_found", owner_role="buyer"}'
+        values: "0+40x60"
+      - series: 'threshold_match_decisions_total{disposition="blocked", policy_version="2026.09.1"}'
+        values: "0+20x60"
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: BlockingExceptionSurge
+        exp_alerts: []
+
+  # -------------------------------------------------------------------- api
+  - name: the api is returning server errors
+    interval: 1m
+    input_series:
+      - series: 'http_server_duration_milliseconds_count{http_status_code="500", http_method="POST", http_target="/v1/documents"}'
+        values: "0+1x40"
+      - series: 'http_server_duration_milliseconds_count{http_status_code="200", http_method="GET", http_target="/v1/queue"}'
+        values: "0+5x40"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ApiErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: api
+            exp_annotations:
+              summary: "The API is returning server errors"
+              description: "16.67% of requests returned 5xx over ten minutes. Check /readyz first: it reports which required dependency is down and whether this instance can still authenticate."
+              runbook_url: "docs/runbooks/api-degraded.md"
+
+  - name: the api has a real but acceptable error rate
+    interval: 1m
+    input_series:
+      # One error in two hundred requests. Real services do this all day.
+      - series: 'http_server_duration_milliseconds_count{http_status_code="500", http_method="POST", http_target="/v1/documents"}'
+        values: "0+1x40"
+      - series: 'http_server_duration_milliseconds_count{http_status_code="200", http_method="GET", http_target="/v1/queue"}'
+        values: "0+199x40"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ApiErrorRate
+        exp_alerts: []
+
+  - name: a nearly idle api where every request fails does not page
+    interval: 1m
+    input_series:
+      # EVERY request 5xx -- a ratio of 1.0, twenty times the threshold -- at one
+      # request a minute. Only the request-rate floor keeps this quiet, which is
+      # what makes this a test of the floor rather than of the ratio.
+      #
+      # The first version of this case used a flat counter, so the numerator was
+      # zero as well and it passed whether the floor existed or not. Deleting
+      # the floor was then invisible. This one fails without it.
+      - series: 'http_server_duration_milliseconds_count{http_status_code="500", http_method="POST", http_target="/v1/documents"}'
+        values: "0+1x40"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ApiErrorRate
+        exp_alerts: []
+
+  - name: api latency is above a second
+    interval: 1m
+    input_series:
+      - series: 'http_server_duration_milliseconds_bucket{le="1000"}'
+        values: "0+1x40"
+      - series: 'http_server_duration_milliseconds_bucket{le="5000"}'
+        values: "0+100x40"
+      - series: 'http_server_duration_milliseconds_bucket{le="+Inf"}'
+        values: "0+100x40"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ApiLatencyHigh
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: api
+            exp_annotations:
+              summary: "API p95 latency is above one second"
+              description: "p95 is 4798ms against a measured healthy p95 of 7 to 25ms. The connection pool panel and the queue depth panel are the two places this usually starts."
+              runbook_url: "docs/runbooks/api-degraded.md"
+
+  - name: api latency is slow but under the threshold
+    interval: 1m
+    input_series:
+      - series: 'http_server_duration_milliseconds_bucket{le="1000"}'
+        values: "0+100x40"
+      - series: 'http_server_duration_milliseconds_bucket{le="5000"}'
+        values: "0+100x40"
+      - series: 'http_server_duration_milliseconds_bucket{le="+Inf"}'
+        values: "0+100x40"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ApiLatencyHigh
+        exp_alerts: []

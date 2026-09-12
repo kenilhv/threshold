@@ -1,0 +1,228 @@
+# Alert rules.
+#
+# Nine rules, and every one of them has a runbook, a paired test that proves it
+# fires, and a paired test that proves it stays quiet when the system is merely
+# busy. A rule that has never been seen to fire is a guess, and a rule that has
+# never been seen to stay quiet is a pager that teaches people to ignore it.
+#
+# Two conventions:
+#
+#   severity: page    wake someone now; the system is losing or stopping work
+#   severity: ticket  look at it in business hours; the system is degraded or
+#                     is telling you something upstream is wrong
+#
+# Every threshold below is either derived from a measurement recorded in
+# DECISIONS.md or is explicitly marked as calibrated against the local fixture
+# mix. None of them is a round number chosen because it looked reasonable.
+
+groups:
+  - name: threshold.queue
+    interval: 30s
+    rules:
+      # ---------------------------------------------------------------- page
+      - alert: QueueObserverStopped
+        # The alert that the gauge's design exists to make possible. Queue depth
+        # is published by exactly one worker -- the one holding the reaper's
+        # advisory lock -- and an empty queue reports zero rather than reporting
+        # nothing precisely so that absence means one thing: nobody is watching.
+        #
+        # Push has no `up` series, so this is how a dead worker is noticed at
+        # all.
+        #
+        # `for` is two minutes rather than five, and the reason is arithmetic
+        # that only shows up when you watch it happen. A pushed series does not
+        # become absent when the pusher stops -- it becomes absent when
+        # Prometheus's five-minute lookback passes the last sample. So the
+        # expression is already carrying five minutes of hysteresis before this
+        # rule waits at all, and `for: 5m` made the true detection latency ten
+        # minutes. Measured with `make demo-alert`: the worker was stopped at
+        # t+0 and the rule went pending at t+337s.
+        #
+        # Two minutes on top of that is confirmation rather than patience: by
+        # then the elected worker has missed fourteen observations, since it
+        # publishes every 30s and the snapshot expires after 90s.
+        expr: absent(threshold_job_queue_depth)
+        for: 2m
+        labels:
+          severity: page
+          component: queue
+        annotations:
+          summary: No worker is reporting queue depth
+          description: >-
+            Queue depth has not been published for five minutes. One worker
+            publishes it, elected by the reaper's advisory lock, so this means
+            the pool has no live member or the elected one is wedged. Nothing is
+            draining the queue and no other queue alert can fire while this is
+            true.
+          runbook_url: docs/runbooks/telemetry-blind.md
+
+      - alert: OldestJobStuck
+        # Worst case the design can produce: two backoffs (5s + 10s) plus a
+        # crash-and-reap cycle (a two-minute lease and a thirty-second reaper),
+        # which is about three minutes. Five minutes is past anything normal
+        # operation explains.
+        expr: threshold_job_queue_oldest_age_seconds > 300
+        for: 5m
+        labels:
+          severity: page
+          component: queue
+        annotations:
+          summary: A claimable job has been waiting more than five minutes
+          description: >-
+            The oldest claimable job is {{ $value | humanizeDuration }} old. The
+            measured median wait is 0.5s and the worst case the design produces
+            -- two backoffs plus a crash and a reap -- is about three minutes.
+          runbook_url: docs/runbooks/queue-backlog.md
+
+      - alert: JobsDeadLettering
+        # Any sustained dead-lettering is work the system has given up on.
+        expr: sum(rate(threshold_job_duration_seconds_count{outcome="dead_lettered"}[15m])) > 0
+        for: 10m
+        labels:
+          severity: page
+          component: queue
+        annotations:
+          summary: Jobs are being dead-lettered
+          description: >-
+            {{ $value | printf "%.3f" }} jobs per second have exhausted their
+            attempts or failed permanently over the last fifteen minutes. These
+            invoices are not being processed and no retry will pick them up.
+          runbook_url: docs/runbooks/dead-letters.md
+
+      # -------------------------------------------------------------- ticket
+      - alert: QueueBacklogGrowing
+        # Steady state on this stack is zero pending: the worker claims again
+        # immediately after settling a job rather than sleeping, so the measured
+        # median wait is one poll interval. A hundred pending sustained for ten
+        # minutes is a pool that is not keeping up rather than a burst.
+        expr: threshold_job_queue_depth{state="pending"} > 100
+        for: 10m
+        labels:
+          severity: ticket
+          component: queue
+        annotations:
+          summary: The queue is not draining
+          description: >-
+            {{ $value }} jobs are pending and have been for ten minutes. Steady
+            state is zero. Either arrival has outrun the pool or something is
+            failing and returning work to pending.
+          runbook_url: docs/runbooks/queue-backlog.md
+
+      - alert: DeadLettersUnreplayed
+        # Dead letters are never purged; they are the rows someone still has to
+        # look at. An hour is long enough that this is a backlog rather than an
+        # incident in progress.
+        expr: threshold_job_dead_letters > 0
+        for: 1h
+        labels:
+          severity: ticket
+          component: queue
+        annotations:
+          summary: Dead letters are waiting for a human
+          description: >-
+            {{ $value }} dead letters have gone unreplayed for an hour. Each one
+            is an invoice that entered the system and stopped. `make dlq` lists
+            them; `make replay id=<uuid>` puts one back.
+          runbook_url: docs/runbooks/dead-letters.md
+
+  - name: threshold.decisions
+    interval: 30s
+    rules:
+      - alert: AutoApprovalRateCollapsed
+        # CALIBRATED, NOT MEASURED. The local fixture mix auto-approves about
+        # 40% of invoices, so a floor of 20% is half the baseline and cannot be
+        # reached by ordinary variation in that mix. In production this number
+        # comes from the real baseline, and the rate limiter on changing it is
+        # that moving this threshold is moving the definition of "working".
+        #
+        # The denominator guard matters more than the threshold: without it the
+        # rule divides by a near-zero rate overnight and pages about arithmetic.
+        expr: |
+          (
+            sum(rate(threshold_match_decisions_total{disposition="auto_approve"}[1h]))
+            /
+            sum(rate(threshold_match_decisions_total[1h]))
+          ) < 0.2
+          and
+          sum(rate(threshold_match_decisions_total[1h])) > 0.005
+        for: 30m
+        labels:
+          severity: ticket
+          component: decisions
+        annotations:
+          summary: Automation rate has collapsed
+          description: >-
+            Only {{ $value | humanizePercentage }} of invoices cleared without a
+            person over the last hour, against a baseline near 40%. The usual
+            causes are a tolerance policy change, a vendor master that stopped
+            resolving, or a purchase order feed that stopped arriving.
+          runbook_url: docs/runbooks/automation-rate.md
+
+      - alert: BlockingExceptionSurge
+        # A ratio rather than a rate, so it does not fire merely because volume
+        # went up. More than three blocking exceptions per invoice on average
+        # means something upstream is wrong for every invoice rather than for
+        # some of them -- a bad PO import, a currency change, a vendor merge.
+        expr: |
+          sum(rate(threshold_match_exceptions_total{severity="block"}[15m]))
+          /
+          sum(rate(threshold_match_decisions_total[15m]))
+          > 3
+        for: 15m
+        labels:
+          severity: ticket
+          component: decisions
+        annotations:
+          summary: Invoices are raising an unusual number of blocking exceptions
+          description: >-
+            {{ $value | printf "%.1f" }} blocking exceptions per invoice over
+            fifteen minutes. This is a ratio, so it is not explained by volume.
+            Group by code on the "Exceptions by owner" panel to see which
+            control is firing.
+          runbook_url: docs/runbooks/exception-surge.md
+
+  - name: threshold.api
+    interval: 30s
+    rules:
+      - alert: ApiErrorRate
+        # Five percent of requests failing, with a floor on request rate so an
+        # idle service cannot page on one 500 in an empty window.
+        expr: |
+          sum(rate(http_server_duration_milliseconds_count{http_status_code=~"5.."}[10m]))
+          /
+          sum(rate(http_server_duration_milliseconds_count[10m]))
+          > 0.05
+          and
+          sum(rate(http_server_duration_milliseconds_count[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: page
+          component: api
+        annotations:
+          summary: The API is returning server errors
+          description: >-
+            {{ $value | humanizePercentage }} of requests returned 5xx over ten
+            minutes. Check /readyz first: it reports which required dependency
+            is down and whether this instance can still authenticate.
+          runbook_url: docs/runbooks/api-degraded.md
+
+      - alert: ApiLatencyHigh
+        # Measured healthy p95 is 7ms for the match endpoint and 25ms at the
+        # tail. One second is roughly forty times that, which is a different
+        # system rather than a slow day.
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(http_server_duration_milliseconds_bucket[10m]))
+          ) > 1000
+        for: 10m
+        labels:
+          severity: page
+          component: api
+        annotations:
+          summary: API p95 latency is above one second
+          description: >-
+            p95 is {{ $value | printf "%.0f" }}ms against a measured healthy p95
+            of 7 to 25ms. The connection pool panel and the queue depth panel
+            are the two places this usually starts.
+          runbook_url: docs/runbooks/api-degraded.md

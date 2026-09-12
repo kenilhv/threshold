@@ -96,8 +96,12 @@ fmt: ## Apply formatting and fixable lints
 console-verify: ## Typecheck, lint and build the console (what its CI job runs)
 	cd console && npm ci && npm run typecheck && npm run lint && npm run build
 
+.PHONY: check-alerts
+check-alerts: ## Prove every alert rule fires when it should, and stays quiet when it should not
+	python scripts/check_alert_rules.py
+
 .PHONY: verify
-verify: lint test ## What CI runs on every commit
+verify: lint check-alerts test ## What CI runs on every commit
 
 # ----------------------------------------------------------------- queue ---
 
@@ -134,3 +138,7 @@ check-console: ## Drive the console as a clerk and a buyer, and check what it re
 .PHONY: demo-match
 demo-match: ## Three invoices, three decisions, and the reason for each
 	@python scripts/demo_three_way_match.py
+
+.PHONY: demo-alert
+demo-alert: ## Stop the worker and watch QueueObserverStopped notice (~7 min)
+	@python scripts/demo_alert.py

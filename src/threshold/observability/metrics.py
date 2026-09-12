@@ -177,7 +177,7 @@ REGISTRY: Final[tuple[MetricSpec, ...]] = (
         prometheus_name="threshold_match_decisions_total",
         labels=frozenset({"disposition", "policy_version"}),
         dashboards=("Automation rate", "Match dispositions"),
-        alerts=(),
+        alerts=("AutoApprovalRateCollapsed", "BlockingExceptionSurge"),
         emitted_by="worker",
     ),
     MetricSpec(
@@ -185,7 +185,7 @@ REGISTRY: Final[tuple[MetricSpec, ...]] = (
         prometheus_name="threshold_match_exceptions_total",
         labels=frozenset({"code", "severity", "owner_role"}),
         dashboards=("Exceptions by owner",),
-        alerts=(),
+        alerts=("BlockingExceptionSurge",),
         emitted_by="worker",
     ),
     MetricSpec(
@@ -206,7 +206,7 @@ REGISTRY: Final[tuple[MetricSpec, ...]] = (
         prometheus_name="threshold_job_duration_seconds",
         labels=frozenset({"kind", "outcome"}),
         dashboards=("Job latency", "Job outcomes"),
-        alerts=(),
+        alerts=("JobsDeadLettering",),
         emitted_by="worker",
     ),
     MetricSpec(
@@ -222,7 +222,7 @@ REGISTRY: Final[tuple[MetricSpec, ...]] = (
         prometheus_name="threshold_job_queue_depth",
         labels=frozenset({"state"}),
         dashboards=("Queue depth",),
-        alerts=(),
+        alerts=("QueueBacklogGrowing", "QueueObserverStopped"),
         emitted_by="worker",
     ),
     MetricSpec(
@@ -230,7 +230,7 @@ REGISTRY: Final[tuple[MetricSpec, ...]] = (
         prometheus_name="threshold_job_queue_oldest_age_seconds",
         labels=frozenset(),
         dashboards=("Oldest claimable job",),
-        alerts=(),
+        alerts=("OldestJobStuck",),
         emitted_by="worker",
     ),
     MetricSpec(
@@ -238,7 +238,7 @@ REGISTRY: Final[tuple[MetricSpec, ...]] = (
         prometheus_name="threshold_job_dead_letters",
         labels=frozenset(),
         dashboards=("Dead letters",),
-        alerts=(),
+        alerts=("DeadLettersUnreplayed",),
         emitted_by="worker",
     ),
     # -- emitted by instrumentation, declared here because it still ships ------
@@ -255,7 +255,7 @@ REGISTRY: Final[tuple[MetricSpec, ...]] = (
         # ever varying. `http.target` is the route TEMPLATE here, not the path.
         labels=frozenset({"http.method", "http.status_code", "http.target"}),
         dashboards=("API request rate", "API latency", "API errors"),
-        alerts=(),
+        alerts=("ApiErrorRate", "ApiLatencyHigh"),
         emitted_by="api",
     ),
     MetricSpec(
