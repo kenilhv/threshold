@@ -18,6 +18,7 @@ import structlog
 from threshold.adapters.db import dispose_engine, init_engine
 from threshold.config.settings import get_settings
 from threshold.observability.logging import configure_logging
+from threshold.observability.metrics import configure_metrics
 from threshold.observability.tracing import configure_tracing
 from threshold.workers.runtime import WorkerRuntime
 
@@ -27,6 +28,7 @@ log = structlog.get_logger(__name__)
 async def _main() -> None:
     settings = get_settings()
     configure_logging(settings)
+    configure_metrics(settings)
     configure_tracing(settings)
     init_engine(settings)
 

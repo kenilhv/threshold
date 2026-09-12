@@ -5,6 +5,218 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-023 — SQLAlchemy is instrumented on the engine, not on the module
+
+**Date:** 2026-09-11 · **Status:** accepted · **Fixed**
+
+`configure_tracing` called `SQLAlchemyInstrumentor().instrument()` with no
+engine, on the argument — written into the code as a comment — that instrumenting
+globally saved `init_engine` from having to know about tracing. That call
+reached nothing, and had reached nothing since the day it was added.
+
+The global form works by replacing `create_async_engine` on
+`sqlalchemy.ext.asyncio`. `adapters/db.py` binds that name with a
+`from … import` at module scope, and `api/main.py` imports `adapters/db` at
+module scope, so the name is resolved when the API module is imported — long
+before `create_app()` runs anything. `db.py` therefore held the original
+function for the life of the process, and every engine it built was untouched.
+
+Measured, in the production import order:
+
+    >>> import threshold.api.main
+    >>> db.create_async_engine is sqlalchemy.ext.asyncio.create_async_engine
+    False
+
+The consequences were entirely silent. The service emitted a `connect` span and
+no `select` spans at all, so the SQL half of every trace M5 exists to produce was
+missing; and `db.client.connections.usage` — declared in the metric registry —
+was never produced. Nothing raised, nothing logged, and the only evidence was an
+absence in a backend that had not been stood up yet. It was found by writing a
+test that asserted a declared metric actually appears.
+
+The fix instruments the object rather than the factory:
+`SQLAlchemyInstrumentor().instrument(engine=_engine.sync_engine)` inside
+`init_engine`, where the engine exists. That cannot fail this way whatever the
+import order is. The cost is that `adapters/db.py` now imports from
+OpenTelemetry, which is the trade the original comment declined; it is worth it,
+because the alternative is a comment explaining why an import was avoided
+attached to code that did nothing.
+
+Botocore stays global and is not affected. It wraps
+`BaseClient._make_api_call` on `botocore.client`, which is a method on a class —
+every holder of the class sees the patch, whenever it was applied. Verified by
+reading the instrumentor rather than by analogy.
+
+`TestTheInstrumentationReachesTheEngine` pins both signals, and fails with
+"spans were []" when the fix is reverted.
+
+---
+
+## D-022 — Metric labels are a schema the SDK enforces
+
+**Date:** 2026-09-11 · **Status:** accepted
+
+Cardinality is what kills a metrics backend, and it dies to a single attribute
+that looks entirely reasonable where it is written. One `document_id` on one
+counter turns a six-series metric into a series per invoice, permanently, and
+nothing fails at the time — not the request, not the test suite, not the build.
+Review is a weak control for a defect whose signature is a line that reads
+correctly.
+
+So every instrument is declared in `observability/metrics.py:REGISTRY` with the
+exact attribute keys it may carry, and `configure_metrics` compiles each
+declaration into an SDK `View` with `attribute_keys=`. An attribute nobody
+declared is removed by the SDK before an exporter sees it. The registry is
+enforcement rather than documentation, which is the whole point: a call site
+cannot leak a label by being careless, only by editing the registry.
+
+`FORBIDDEN_LABELS` guards that other direction, and `test_the_check_can_fail`
+guards the guard. Every check added here was reverted deliberately and watched
+to fail before being kept; nine of them, including "the views stop enforcing the
+allowlist" and "the job kind clamp is removed". A label test that passes because
+it checks nothing is worse than no label test, and this suite has shipped that
+mistake three times.
+
+Each entry also names what reads it, and a declaration with an empty `read_by`
+fails the suite. The recurring defect in this repository is "declared and never
+read" — `audit_event.trace_id` held the wrong value for three milestones,
+`DeadLetter.dedupe_key` has never been written — and a metric nobody plots is
+the same defect in a different costume. D-023 exists because that check caught
+one on the day it was written.
+
+Four decisions inside this were measured rather than assumed, and each changed
+the shape of the code:
+
+**Histogram buckets are explicit.** The SDK's defaults are `(0, 5, 10, 25 …
+10000)`, which are millisecond-scaled. A histogram declared in seconds that
+accepts them puts every number this system produces into the `le=5` bucket: job
+execution measured 3–52 ms over 317 jobs, so the metric would be named
+`_seconds`, scrape cleanly, and be able to report only "under five seconds". The
+boundaries here come from measured distributions, and the queue-wait boundaries
+sit on the points where the system's behaviour changes — the one-second poll,
+the five- and ten-second backoffs, the two-minute lease — because "waited longer
+than a poll" and "waited longer than a lease" are different incidents with
+different runbooks.
+
+**Queue depth is an observable gauge fed by a snapshot.** A synchronous `Gauge`
+disappears from an exposition on any scrape where `set()` was not called since
+the previous one, so a depth sampled every 30 s and scraped every 15 s would
+flap in and out of existence. Observable gauges re-run their callback on every
+collection. But those callbacks run on the exporter's thread — and on the
+caller's thread during `force_flush` — where there is no event loop to await a
+database on, so the worker takes the reading on its own loop and the callback is
+a pure read of the result.
+
+**The snapshot expires after 90 seconds.** A frozen gauge is worse than an absent
+one: it reports a healthy queue for ever after the observer dies, which is how
+people learn not to trust a dashboard. An absent series is a question Prometheus
+can ask with `absent()`.
+
+**Exactly one worker publishes it.** Queue depth is a property of the queue, so
+N workers reporting it would make `sum()` report N times the truth. The reaper's
+advisory lock already elects one worker for the same reason, and reusing it
+means there is one answer to "who speaks for the queue" instead of two
+mechanisms that can disagree.
+
+The API's RED metrics are deliberately **not** hand-rolled; the FastAPI
+instrumentation already emits them, and a second set would double-count and
+disagree about labels. Two of its properties were verified rather than trusted,
+because they are the ones that decide whether this is safe to expose: the route
+arrives as a template, so `/v1/documents/{document_id}/match` is one series
+rather than one per invoice, and a request matching no route carries no route
+attribute at all, so a port scanner cannot grow the exposition. The trap is that
+the template arrives under `http.target`, which is the same key that holds the
+*raw* path on spans.
+
+---
+
+## D-021 — A job continues its producer's trace rather than linking to it
+
+**Date:** 2026-09-11 · **Status:** accepted
+
+The messaging convention is that a consumer *links* to the producer's span
+rather than becoming its child, because a message may be consumed arbitrarily
+later and a span that stays open across that window misrepresents the work.
+This system does the opposite for the automatic chain, and the reason is that
+"arbitrarily later" is not true here — it is bounded, and the bound is small
+enough to be measured rather than assumed.
+
+The bounds are: three attempts including the first, five then ten seconds of
+backoff between them, a one-second poll, and a two-minute lease with a
+thirty-second reaper. Measured against 317 completed jobs in the local stack,
+the wait between a job becoming available and being claimed is:
+
+| kind | p50 | p95 | max |
+| --- | --- | --- | --- |
+| `extract_document` | 0.503 s | 0.944 s | 1.084 s |
+| `match_invoice` | 0.029 s | 0.131 s | 0.240 s |
+
+`extract_document` is uniform across the one-second poll because the producer
+commits at an arbitrary point in the polling cycle; `match_invoice` is an order
+of magnitude faster because the worker enqueues it from inside the extract
+handler and its loop claims again immediately rather than sleeping. The
+worst case inside the design — two failures with full backoff, or a
+crash-and-reap cycle — is tens of seconds to a few minutes.
+
+Against that, linking costs something concrete. `ARCHITECTURE.md` has promised
+since M0 that `audit_event.trace_id` is "the same id as the distributed trace".
+One invoice writes four audit rows across two processes and two queue hops. If
+each hop started its own trace, that promise would resolve to four different
+ids for one invoice, and the query that milestone exists to enable — show me
+everything that happened to this document — would need a join through the links
+instead of an equality. Continuing the trace is what makes it an equality.
+
+The trade is only valid while those bounds hold. A longer backoff, a larger
+attempt budget, or jobs scheduled hours ahead invalidate it, and it must then be
+decided again rather than inherited — which is why this is written down instead
+of living only in the shape of the code.
+
+A replayed dead letter is the exception and does start its own trace, carrying a
+span link back to the one that died. A replay is a human decision taken possibly
+days after the failure; inheriting that trace would make today's work appear
+inside last week's and report the retry as a six-day operation. `replay()`
+moves `_traceparent` to `_linked_traceparent` for exactly this, and
+`test_job_trace_context.py` pins both halves.
+
+---
+
+## D-020 — The audit log stores the trace id, and does not store the request id
+
+**Date:** 2026-09-11 · **Status:** accepted · **Fixed**
+
+`audit_event.trace_id` held the request id. `ARCHITECTURE.md` had said since M0
+that the column is "the same id as the distributed trace", so the sentence was
+false in two different ways at once: the value was the wrong identifier, and
+every row the worker wrote was `NULL` because a background job has no request.
+
+The two identifiers are not interchangeable and neither is a substitute for the
+other. A request id is chosen by the caller — `smoke-test-id` is one this
+repository really sends — so it is not, and cannot be made to be, the 32
+lowercase hex characters a W3C trace id is. It is a handle a caller can quote
+back when asking about their own call. A trace id is generated by the SDK,
+survives process boundaries, and is the thing a trace backend indexes.
+
+Storing both was considered and rejected. The audit table is the durable record
+of what happened, and the durable identifier for "what happened" is the trace
+id; a request id is a handle for one conversation with one client, and its
+natural home is the log line, where it already sits beside the trace id on every
+line of that request. That adjacency is the join: a caller quotes a request id,
+the logs turn it into a trace id, and the trace id reaches both the audit rows
+and the spans. A second column would duplicate that join into the schema and
+would be `NULL` for every row written by a worker, which is most of them.
+
+The value now comes from the active span, via
+`observability/tracing.current_trace_id()`, which returns `None` outside a
+trace rather than formatting an invalid span context — a naive format yields
+`00000000000000000000000000000000`, which is indistinguishable from a real id
+in a column and would make "this row has no trace" unaskable.
+
+`tests/integration/test_trace_continuity.py` reaches the rows by joining through
+the entities they describe rather than selecting on `trace_id`, because
+selecting rows by trace id and then asserting their trace ids match is circular.
+
+---
+
 ## D-019 — The queue trusted the worker's clock
 
 **Date:** 2026-09-10 · **Status:** accepted · **Fixed**

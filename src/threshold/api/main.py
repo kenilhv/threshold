@@ -26,6 +26,7 @@ from threshold.adapters.db import dispose_engine, init_engine
 from threshold.api.routes import approvals, documents, health, identity
 from threshold.config.settings import get_settings
 from threshold.observability.logging import configure_logging
+from threshold.observability.metrics import configure_metrics
 from threshold.observability.tracing import configure_tracing
 
 log = structlog.get_logger(__name__)
@@ -120,6 +121,12 @@ def create_app() -> FastAPI:
     # logs would otherwise be rendered with structlog's defaults -- a
     # human-readable line in an environment whose whole contract is JSON.
     configure_logging(settings)
+
+    # Before instrumentation, because the FastAPI instrumentor resolves its
+    # meter when it instruments: a provider installed afterwards would leave
+    # the HTTP metrics recording into the pre-provider window, where
+    # measurements are dropped with no exception and no log line.
+    configure_metrics(settings)
 
     # Here, and specifically NOT in the lifespan. Instrumenting from the
     # lifespan does not fail -- it silently records nothing, because

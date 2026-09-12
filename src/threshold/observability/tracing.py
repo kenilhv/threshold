@@ -35,13 +35,11 @@ from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.botocore import BotocoreInstrumentor
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.semconv.resource import ResourceAttributes
 
 from threshold.config.settings import Settings
+from threshold.observability.resource import resource_for
 
 log = structlog.get_logger(__name__)
 
@@ -63,19 +61,10 @@ def configure_tracing(settings: Settings, *, app: FastAPI | None = None) -> None
     global _provider_configured
 
     if not _provider_configured:
-        provider = TracerProvider(
-            resource=Resource.create(
-                {
-                    # Without this, everything in the stack reports as one
-                    # service. `service_name` defaults to "threshold-api" and
-                    # the compose environment anchor is shared, so the worker
-                    # called itself the API until this milestone set it
-                    # per-service.
-                    ResourceAttributes.SERVICE_NAME: settings.service_name,
-                    ResourceAttributes.DEPLOYMENT_ENVIRONMENT: settings.environment,
-                }
-            )
-        )
+        # The same resource the metrics provider uses, from one function, so a
+        # trace and a metric describing the same incident agree about which
+        # service produced them.
+        provider = TracerProvider(resource=resource_for(settings))
         if settings.otel_exporter_otlp_endpoint:
             provider.add_span_processor(
                 BatchSpanProcessor(
@@ -96,12 +85,17 @@ def configure_tracing(settings: Settings, *, app: FastAPI | None = None) -> None
 
         trace.set_tracer_provider(provider)
 
-        # Instrumented globally rather than per-engine: the engine is built in
-        # `init_engine`, which would otherwise have to import the tracing module
-        # and know about it.
-        SQLAlchemyInstrumentor().instrument(enable_commenter=False)
+        # SQLAlchemy is NOT instrumented here. It is instrumented on the engine
+        # in `adapters/db.py`, because the global form patches
+        # `create_async_engine` on its module and `db.py` binds that name at
+        # import -- long before this function runs. See the note there; the
+        # failure was silent, and cost every SQL span in the service.
+        #
         # MinIO is reached through boto3, so object storage shows up as spans
-        # without a line of storage code changing.
+        # without a line of storage code changing. Botocore is safe to
+        # instrument globally because it wraps a method on
+        # `botocore.client.BaseClient`, which every holder of the class sees,
+        # rather than replacing an importable name.
         # The botocore instrumentor is untyped upstream; the call is correct.
         BotocoreInstrumentor().instrument()  # type: ignore[no-untyped-call]
         _provider_configured = True

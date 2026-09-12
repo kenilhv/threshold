@@ -40,6 +40,7 @@ from threshold.domain.approval import (
 from threshold.domain.models import ApprovalDecision, MatchException, MatchResult
 from threshold.domain.roles import Role
 from threshold.domain.taxonomy import ExceptionCode, OwnerRole, Severity
+from threshold.observability.metrics import record_approval_decision
 from threshold.services.audit import Actor, record
 
 log = structlog.get_logger(__name__)
@@ -117,6 +118,7 @@ class ApprovalService:
                 "policy_version": result.policy_version,
             },
         )
+        record_approval_decision(decision=Decision.AUTO_APPROVED.value, actor_type="system")
         return decision
 
     async def decide(
@@ -215,6 +217,16 @@ class ApprovalService:
             actor=actor_label,
             overrode=decision.overrode,
         )
+        # Counted against `actor_type`, which is the whole point: this and the
+        # system's own decision above land on one metric, so "what share of
+        # invoices cleared without a person" is a ratio between two labels of
+        # the same counter rather than a comparison between two different ones.
+        #
+        # Refusals are deliberately not counted here. Every path that raises
+        # returns before this line, so the counter means "a decision was
+        # recorded" -- a 403 or a 409 is a fact about a request, which the HTTP
+        # metrics already carry, not a decision about an invoice.
+        record_approval_decision(decision=request.decision.value, actor_type="human")
         return decision
 
     async def open_exceptions(

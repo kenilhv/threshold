@@ -44,6 +44,7 @@ from threshold.domain.models import (
     VendorBankAccount,
 )
 from threshold.domain.tolerance import DEFAULT_POLICY, ZERO, TolerancePolicy
+from threshold.observability.metrics import record_match_decision, record_match_exceptions
 from threshold.services.approvals import ApprovalService
 from threshold.services.audit import Actor, record
 
@@ -441,6 +442,24 @@ class MatchingService:
             disposition=outcome.disposition.value,
             exceptions=len(outcome.exceptions),
             policy_version=outcome.policy_version,
+        )
+
+        # After the writes and outside the audit record, because a metric is
+        # never allowed to be the reason a decision fails to persist. The
+        # instruments drop their measurements when no reader is configured and
+        # never raise on a dead collector; the one call that can raise is an
+        # unhashable attribute value, which is why every label below is a
+        # string off a frozen enum.
+        #
+        # `policy_version` is a label because the question this metric exists to
+        # answer -- what share of invoices clear without a person -- is only
+        # meaningful against the policy that was in force, and a tolerance
+        # change is exactly the event that moves it.
+        record_match_decision(
+            disposition=outcome.disposition.value, policy_version=outcome.policy_version
+        )
+        record_match_exceptions(
+            (exc.code.value, exc.severity.value, exc.owner.value) for exc in outcome.exceptions
         )
         return result
 

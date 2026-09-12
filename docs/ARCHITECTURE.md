@@ -486,7 +486,7 @@ src/threshold/
   domain/         entities, field classification — no I/O, no framework
   adapters/       database, object store, queue — everything that talks outward
   workers/        the worker process
-  observability/  structured logging; traces and metrics land here in M5
+  observability/  structured logging, traces, and metrics behind a label registry
   config/         twelve-factor settings
 migrations/       Alembic, reversible, one transaction per upgrade
 infra/local/      Keycloak realm and other local-only fixtures

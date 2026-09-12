@@ -98,6 +98,15 @@ class ClaimedJob:
     attempts: int
     max_attempts: int
     lease_expires_at: datetime
+    #: How long this job sat claimable before anyone took it.
+    #:
+    #: Computed by the database inside the claim, as ``now() - run_after``, and
+    #: not by subtracting two timestamps in Python. The worker's clock has no
+    #: part in it, for the reason D-019 gives: the reaper and the claim
+    #: predicate both compare against the database's ``now()``, so a worker
+    #: whose clock has drifted after a host sleep would report a queue latency
+    #: that says more about the VM than the queue.
+    waited: timedelta
 
     @property
     def is_final_attempt(self) -> bool:
@@ -165,9 +174,22 @@ class ReapableQueue(Queue, Protocol):
     operational verb a worker legitimately owns: it is the mechanism by which a
     pool heals itself after one of its own members dies. A request handler has
     no business calling it.
+
+    Observation is on this for the same reason. ``Queue``'s docstring reserves
+    the operational verbs for ``queuectl`` and an operator, and reading the
+    depth is not an exception to that so much as the other half of it: a pool
+    that heals itself is also the thing that should be able to say how far
+    behind it is. Publishing that reading is still restricted to one worker —
+    see ``_observe_queue`` — because queue depth is a property of the queue and
+    eight workers reporting it would make ``sum()`` report eight times the
+    truth.
     """
 
     async def reap_expired_leases(self, session: AsyncSession) -> int: ...
+
+    async def stats(self, session: AsyncSession) -> dict[str, int]: ...
+
+    async def oldest_claimable_age(self, session: AsyncSession) -> float | None: ...
 
 
 class PostgresJobQueue:
@@ -287,6 +309,12 @@ class PostgresJobQueue:
                 Job.lease_expires_at,
                 Job.run_after,
                 Job.created_at,
+                # The wait, measured by the one clock that governs the claim.
+                # `now()` here is the same transaction timestamp written into
+                # `claimed_at` on the line above, so this is exactly
+                # `claimed_at - run_after` without a second column or a second
+                # opinion about what time it is.
+                (func.now() - Job.run_after).label("waited"),
             )
         )
         rows = sorted(
@@ -300,6 +328,7 @@ class PostgresJobQueue:
                 attempts=r.attempts,
                 max_attempts=r.max_attempts,
                 lease_expires_at=r.lease_expires_at,
+                waited=r.waited,
             )
             for r in rows
         ]
@@ -501,6 +530,29 @@ class PostgresJobQueue:
         # execute() is typed as Result; a DELETE always yields a CursorResult,
         # which is where rowcount lives.
         return cast("CursorResult[Any]", result).rowcount or 0
+
+    async def oldest_claimable_age(self, session: AsyncSession) -> float | None:
+        """Seconds the longest-waiting claimable job has been waiting, or None.
+
+        ``None`` when nothing is claimable, which is deliberately different from
+        zero: zero is what an empty queue and a job that arrived this instant
+        would both report, and the only question this answers is "has something
+        been waiting too long".
+
+        Subtracted inside the database for the reason the claim is:
+        `run_after` was written by the database and must be compared with the
+        database's own clock.
+        """
+        waited = (
+            await session.execute(
+                select(func.extract("epoch", func.now() - func.min(Job.run_after))).where(
+                    Job.state == JobState.PENDING.value, Job.run_after <= func.now()
+                )
+            )
+        ).scalar_one()
+        # min() over no rows is NULL, so an empty queue answers None without a
+        # second round trip to ask whether it was empty.
+        return None if waited is None else float(waited)
 
     async def stats(self, session: AsyncSession) -> dict[str, int]:
         """Queue depth by state, for the dashboard and the alert rules in M5."""
