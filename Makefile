@@ -101,7 +101,7 @@ check-alerts: ## Prove every alert rule fires when it should, and stays quiet wh
 	python scripts/check_alert_rules.py
 
 .PHONY: verify
-verify: lint check-alerts test ## What CI runs on every commit
+verify: lint check-alerts test eval-check ## What CI runs on every commit
 
 # ----------------------------------------------------------------- queue ---
 
@@ -142,6 +142,14 @@ demo-match: ## Three invoices, three decisions, and the reason for each
 .PHONY: eval
 eval: ## Measure the extractor and derive the gate:  make eval [n=400]
 	@PYTHONPATH=. python scripts/evaluate.py -n $(or $(n),400)
+
+.PHONY: eval-check
+eval-check: ## Compare extraction against the committed baseline
+	@PYTHONPATH=. python scripts/check_eval.py
+
+.PHONY: eval-baseline
+eval-baseline: ## Rewrite the baseline. Read the diff; it is a behaviour change
+	@PYTHONPATH=. python scripts/check_eval.py --write
 
 .PHONY: demo-alert
 demo-alert: ## Stop the worker and watch QueueObserverStopped notice (~7 min)

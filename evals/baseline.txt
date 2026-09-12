@@ -1,0 +1,56 @@
+# The committed measurement of the deterministic extractor.
+#
+# Regenerate with:  make eval-baseline
+#
+# Regenerating is not a way to make `make eval-check` pass. Every line here is a
+# claim about how well this system reads invoices, and a diff on any of them is
+# a behaviour change that belongs in the pull request description. The two
+# questions worth asking before accepting one:
+#
+#   Did accuracy move in the direction the change intended?
+#   Did `shipped.wrong` go up? That line counts invoices this system would
+#   auto-approve on a misreading, and it should only ever go down.
+#
+# `measured_by.*` records the versions of the two libraries that render and read
+# the corpus. If one of those moved, the instrument moved: re-read the diff as a
+# behaviour change under new conditions rather than as a refresh.
+
+schema                      1
+corpus.documents            400
+corpus.seed                 17
+corpus.readings             2000
+measured_by.reportlab       5.0.1
+measured_by.pypdf           6.16.2
+policy.version              2026.09.2
+policy.gate                 0.60
+overall.fields              n=2000 k=1211
+overall.documents           n=400 k=65
+field.currency              n=400 k=400
+field.invoice_number        n=400 k=289
+field.issue_date            n=400 k=100
+field.total                 n=400 k=119
+field.vendor_name           n=400 k=303
+layout.continental_tabular  n=500 k=465
+layout.multipage_credit     n=500 k=309
+layout.scanned_thermal      n=500 k=219
+layout.us_service_minimal   n=500 k=218
+curve.field.0.9300          n=400 k=400
+curve.field.0.8800          n=179 k=179
+curve.field.0.7200          n=56 k=53
+curve.field.0.6160          n=100 k=100
+curve.field.0.5800          n=110 k=110
+curve.field.0.4690          n=30 k=18
+curve.field.0.4500          n=400 k=303
+curve.field.0.4340          n=80 k=48
+curve.field.0.3987          n=70 k=0
+curve.field.0.3689          n=158 k=0
+curve.field.0.3038          n=6 k=0
+curve.field.0.0000          n=411 k=0
+curve.document.0.6160       n=53 k=53
+curve.document.0.5800       n=3 k=0
+curve.document.0.4340       n=44 k=12
+curve.document.0.0000       n=300 k=0
+derived.0.95                threshold=0.6160 accepted=53 wrong=0
+derived.0.99                threshold=none accepted=0 wrong=0
+shipped.accepted            53
+shipped.wrong               0
