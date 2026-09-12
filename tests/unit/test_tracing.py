@@ -224,7 +224,7 @@ class TestConfiguration:
         would pass on None and prove nothing.
         """
         settings = get_settings()
-        assert settings.otel_exporter_otlp_endpoint is None
+        assert settings.otel_traces_endpoint is None
         configure_tracing(settings)  # idempotent; already called at import
 
         provider = TracerProvider()

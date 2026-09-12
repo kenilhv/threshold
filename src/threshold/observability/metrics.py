@@ -89,18 +89,33 @@ class MetricSpec:
     """One instrument, and everything that is true of it by declaration."""
 
     name: str
+    #: What Prometheus calls this series once its OTLP receiver has translated
+    #: the name. Written down rather than derived, because the translation is
+    #: done in Go by Prometheus and is not obvious: dots become underscores, a
+    #: counter gains ``_total``, unit ``s`` appends ``_seconds`` -- but a unit
+    #: whose word is already a token in the name appends nothing, and an
+    #: annotation unit like ``{job}`` appends nothing either. Every value here
+    #: is checked against a running Prometheus by
+    #: ``tests/integration/test_telemetry_stack.py``, so a wrong guess fails the
+    #: gate rather than an empty dashboard panel.
+    prometheus_name: str
     #: Exactly the attribute keys this instrument may carry. Anything else is
     #: dropped by the SDK before export.
     labels: frozenset[str]
-    #: What reads this. A metric with no reader is this repository's favourite
-    #: defect, so the answer is required and the test checks it is not empty.
-    read_by: str
+    #: Dashboard panels that plot this, by exact panel title. A metric nobody
+    #: plots and nobody alerts on is this repository's favourite defect wearing
+    #: a new hat, so at least one consumer is required -- and these are matched
+    #: against the provisioned Grafana JSON rather than taken on trust.
+    dashboards: tuple[str, ...]
+    #: Alert rules that fire on this, by exact rule name. Matched against the
+    #: provisioned rules file the same way.
+    alerts: tuple[str, ...]
     #: Which process emits it, so a test knows where to go looking.
     emitted_by: str
 
     @property
-    def series_bound(self) -> str:
-        return ", ".join(sorted(self.labels)) or "(no labels)"
+    def consumers(self) -> tuple[str, ...]:
+        return self.dashboards + self.alerts
 
 
 #: Keys that are never a label, whatever an instrument declares.
@@ -159,85 +174,124 @@ REGISTRY: Final[tuple[MetricSpec, ...]] = (
     # -- what the system decided, which is what it is for ---------------------
     MetricSpec(
         name=MATCH_DECISIONS,
+        prometheus_name="threshold_match_decisions_total",
         labels=frozenset({"disposition", "policy_version"}),
-        read_by="dashboard: automation rate; alert: AutoApprovalRateCollapsed",
+        dashboards=("Automation rate", "Match dispositions"),
+        alerts=(),
         emitted_by="worker",
     ),
     MetricSpec(
         name=MATCH_EXCEPTIONS,
+        prometheus_name="threshold_match_exceptions_total",
         labels=frozenset({"code", "severity", "owner_role"}),
-        read_by="dashboard: exceptions by owner; alert: ExceptionBacklogByOwner",
+        dashboards=("Exceptions by owner",),
+        alerts=(),
         emitted_by="worker",
     ),
     MetricSpec(
         name=APPROVAL_DECISIONS,
+        prometheus_name="threshold_approval_decisions_total",
         # The one metric this project exists to produce: the share of invoices
         # that clear without a person. `actor_type` is what makes that a ratio
         # rather than a count, and it is two values for ever -- the machine
         # writes its decision into the same table a person writes to.
         labels=frozenset({"decision", "actor_type"}),
-        read_by="dashboard: machine vs human; alert: HumanDecisionsStalled",
+        dashboards=("Machine versus human",),
+        alerts=(),
         emitted_by="api, worker",
     ),
     # -- whether the work is getting done -------------------------------------
     MetricSpec(
         name=JOB_DURATION,
+        prometheus_name="threshold_job_duration_seconds",
         labels=frozenset({"kind", "outcome"}),
-        read_by="dashboard: job latency and failure rate; alert: JobFailureRate",
+        dashboards=("Job latency", "Job outcomes"),
+        alerts=(),
         emitted_by="worker",
     ),
     MetricSpec(
         name=QUEUE_WAIT,
+        prometheus_name="threshold_job_queue_wait_seconds",
         labels=frozenset({"kind"}),
-        read_by="dashboard: queue latency; alert: QueueFallingBehind",
+        dashboards=("Queue wait",),
+        alerts=(),
         emitted_by="worker",
     ),
     MetricSpec(
         name=QUEUE_DEPTH,
+        prometheus_name="threshold_job_queue_depth",
         labels=frozenset({"state"}),
-        read_by="dashboard: queue depth; alert: QueueSaturated",
+        dashboards=("Queue depth",),
+        alerts=(),
         emitted_by="worker",
     ),
     MetricSpec(
         name=QUEUE_OLDEST_AGE,
+        prometheus_name="threshold_job_queue_oldest_age_seconds",
         labels=frozenset(),
-        read_by="alert: OldestJobStuck",
+        dashboards=("Oldest claimable job",),
+        alerts=(),
         emitted_by="worker",
     ),
     MetricSpec(
         name=DEAD_LETTERS,
+        prometheus_name="threshold_job_dead_letters",
         labels=frozenset(),
-        read_by="dashboard: DLQ; alert: DeadLettersUnreplayed (runbook: replay)",
+        dashboards=("Dead letters",),
+        alerts=(),
         emitted_by="worker",
     ),
     # -- emitted by instrumentation, declared here because it still ships ------
     MetricSpec(
         name=HTTP_DURATION,
+        # Milliseconds, not seconds: the instrumentation emits the older
+        # semantic convention by default, and Prometheus appends the unit it is
+        # actually given. Renaming it would mean opting into the stable semconv
+        # and changing every attribute key at the same time.
+        prometheus_name="http_server_duration_milliseconds",
         # Trimmed from the eight attributes the instrumentor offers. The five
         # dropped ones -- scheme, host, port, flavor, server_name -- are
         # constant for a deployment, so they multiply the exposition without
         # ever varying. `http.target` is the route TEMPLATE here, not the path.
         labels=frozenset({"http.method", "http.status_code", "http.target"}),
-        read_by="dashboard: API RED; alert: ApiErrorRate, ApiLatency",
+        dashboards=("API request rate", "API latency", "API errors"),
+        alerts=(),
         emitted_by="api",
     ),
     MetricSpec(
         name=HTTP_ACTIVE_REQUESTS,
+        prometheus_name="http_server_active_requests",
         labels=frozenset({"http.method"}),
-        read_by="dashboard: API concurrency",
+        dashboards=("API concurrency",),
+        alerts=(),
         emitted_by="api",
     ),
     MetricSpec(
         name=DB_CONNECTIONS,
+        # No unit suffix: Prometheus omits it when the unit's word is already a
+        # token in the name, and "connections" is. Guessing `_connections` here
+        # would have produced a dashboard panel that renders empty and reports
+        # no error.
+        prometheus_name="db_client_connections_usage",
         # `pool.name` is the DSN with the credentials stripped by SQLAlchemy.
         # One value per engine, so it is bounded -- but the stripping is what
         # keeps a password out of a metrics backend, and test_metric_labels.py
         # pins it rather than trusting it to survive an upgrade.
         labels=frozenset({"pool.name", "state"}),
-        read_by="dashboard: pool saturation; alert: DbPoolExhausted",
+        dashboards=("Connection pool",),
+        alerts=(),
         emitted_by="api, worker",
     ),
 )
+
+
+#: Attribute keys become Prometheus label names with dots replaced. Written as
+#: a function rather than a lookup because it is the same rule Prometheus
+#: applies, and a dashboard querying `http.target` instead of `http_target`
+#: renders an empty panel rather than an error.
+def prometheus_label(attribute: str) -> str:
+    return attribute.replace(".", "_")
+
 
 BY_NAME: Final[Mapping[str, MetricSpec]] = {spec.name: spec for spec in REGISTRY}
 
@@ -328,8 +382,8 @@ def configure_metrics(settings: Settings) -> None:
         return
 
     readers: list[PeriodicExportingMetricReader] = []
-    if settings.otel_exporter_otlp_endpoint:
-        endpoint = f"{settings.otel_exporter_otlp_endpoint.rstrip('/')}/v1/metrics"
+    if settings.otel_metrics_endpoint:
+        endpoint = f"{settings.otel_metrics_endpoint.rstrip('/')}/v1/metrics"
         readers.append(
             PeriodicExportingMetricReader(
                 OTLPMetricExporter(endpoint=endpoint, timeout=EXPORT_TIMEOUT.total_seconds()),
@@ -598,12 +652,19 @@ def _observe_depth(_options: CallbackOptions) -> Sequence[Observation]:
 
 def _observe_oldest_age(_options: CallbackOptions) -> Sequence[Observation]:
     snapshot = _queue.current()
-    if snapshot is None or snapshot.oldest_pending_age_seconds is None:
-        # No snapshot, or nothing is waiting. Reporting 0 for an empty queue
-        # would be indistinguishable from "the oldest job arrived just now",
-        # and the alert on this is "something has been waiting too long".
+    if snapshot is None:
         return ()
-    return [Observation(snapshot.oldest_pending_age_seconds)]
+    # An empty queue reports zero rather than reporting nothing, so that an
+    # absent series means exactly one thing: nobody is watching the queue.
+    #
+    # The first version omitted it, on the argument that zero is
+    # indistinguishable from "the oldest job arrived this instant". That is
+    # true and it does not matter -- both say nothing is behind. What does
+    # matter is the other reading: if "empty" and "no observer" are both
+    # absence, then the alert for a dead observer cannot be written, and that
+    # is the failure worth catching. Nothing waiting is a measurement; nothing
+    # reporting is an outage.
+    return [Observation(snapshot.oldest_pending_age_seconds or 0.0)]
 
 
 def _observe_dead_letters(_options: CallbackOptions) -> Sequence[Observation]:

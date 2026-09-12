@@ -5,6 +5,85 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-024 — Metrics are pushed to Prometheus over OTLP, and there is no collector
+
+**Date:** 2026-09-11 · **Status:** accepted
+
+Prometheus scrapes. This pushes, and the reason is the worker: it has no HTTP
+server, and a scrape model means either giving it one purely so something can
+scrape it, or running a collector to scrape on its behalf. Prometheus 3's OTLP
+receiver removes both, so the application exports the same way to both backends
+and nothing exists whose only job is forwarding.
+
+A collector earns its place when there is fan-out, sampling, or a backend to
+insulate against. There is none of that on one host, and the seam survives
+anyway: the endpoints are configuration, so pointing the services at a collector
+later changes no code.
+
+The cost is paid in what push does not give you. There is no `up` series and no
+scrape staleness, so "the worker stopped reporting" cannot be detected by a
+target going down — a pushed series stays queryable for the five-minute lookback
+and then simply stops answering. The alerts in M5's last increment have to use
+`absent()` rather than waiting for a series to vanish. The second cost is that
+two processes exporting on their own timers have no shared clock, so
+`out_of_order_time_window` has to be set or a sample landing slightly late is
+rejected; thirty minutes is far more slack than a fifteen-second interval needs.
+
+Three things had to be measured rather than assumed, and all three are the kind
+that fail silently.
+
+**`service.instance.id` must be set, and must be stable.** Prometheus maps it to
+the `instance` label. The Python SDK's `Resource.create()` invents a random UUID
+when nothing supplies one, so every restart would abandon every series and start
+a new one — and without it entirely, two replicas with the same `service.name`
+are not rejected, not logged, and not counted twice: Prometheus merges them into
+a single series and interleaves both processes' samples, so one counter reads
+120 while the two processes independently counted 12 and 120. `resource.py` sets
+it to the hostname, which in a container is the container id: stable for the
+life of the reporter, distinct per replica, and deliberately not
+`worker_identity()`, which carries a pid and a random suffix because it
+identifies a *claim holder* rather than a reporter.
+
+**Resource attributes are not labels.** `deployment.environment` exists only on
+`target_info` unless it is named in `promote_resource_attributes`, so
+`sum by (deployment_environment)` returns nothing at all rather than failing.
+
+**The translated names are not guessable.** Prometheus rewrites an OTLP
+instrument name in Go: dots become underscores, a counter gains `_total`, a unit
+of seconds appends `_seconds` — but a unit whose word already appears in the
+name appends nothing, which is why `db.client.connections.usage` becomes
+`db_client_connections_usage` and not `..._connections`, and an annotation unit
+like `{job}` appends nothing either. A wrong guess produces an empty Grafana
+panel and no error anywhere. So each `MetricSpec` records the name it expects
+and `test_telemetry_stack.py` checks all eleven against a running Prometheus.
+
+That check is one half of a pair. `observability/metrics.py` also declares which
+dashboard panels plot each metric, and `test_dashboard.py` asserts in both
+directions: every panel a metric names exists in the provisioned JSON, and every
+metric a panel queries exists in the registry. Neither half alone is enough —
+the first permits a panel querying a metric nobody declared, the second permits
+a metric naming a panel that was deleted. Seven mutations were applied and
+watched to fail before the tests were kept, including renaming a panel,
+misspelling a metric, and grouping by a label that does not exist.
+
+A related decision, small but load-bearing: **the oldest-claimable-job gauge
+reports zero for an empty queue rather than reporting nothing.** The first
+version omitted it, on the argument that zero is indistinguishable from "a job
+arrived this instant". That is true and it does not matter — both mean nothing
+is behind. What matters is the other reading. If an empty queue and a dead
+observer are both absence, then the alert for a dead observer cannot be written.
+Nothing waiting is a measurement; nothing reporting is an outage, and the two
+must not look the same.
+
+Grafana runs with anonymous access and no login form, which is **local only**
+and is the single riskiest line in `docker-compose.yml`. It is there because a
+password prompt between a stranger and the point of this project is a worse
+trade on a laptop; anything reachable beyond this host drops those four
+variables and puts real authentication in front. `GF_AUTH_BASIC_ENABLED=false`
+stays either way — that one is hardening rather than relaxation.
+
+---
+
 ## D-023 — SQLAlchemy is instrumented on the engine, not on the module
 
 **Date:** 2026-09-11 · **Status:** accepted · **Fixed**

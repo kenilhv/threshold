@@ -1,0 +1,59 @@
+# Prometheus 3, receiving metrics over OTLP rather than scraping them.
+#
+# The receiver is switched on by --web.enable-otlp-receiver in docker-compose,
+# not here; this block only decides how what arrives is translated. That split
+# is easy to get wrong: without the flag, POST /api/v1/otlp/v1/metrics is a 404
+# and the application's exporter logs a transient error for ever.
+#
+# No collector. A collector earns its place when there is fan-out, sampling, or
+# a backend swap to insulate against; on one host with one metrics backend it
+# would be a process whose entire job is forwarding. The seam is still there --
+# the endpoint is configuration, so pointing the services at a collector later
+# changes no code.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus watching itself. Everything else pushes.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+otlp:
+  # Resource attributes are NOT labels by default -- they live only on
+  # `target_info`, so `sum by (deployment_environment)` silently returns
+  # nothing. Anything a query needs to group by has to be named here.
+  #
+  # `service.name` and `service.instance.id` are deliberately absent: they
+  # already become `job` and `instance`, and promoting them adds a redundant
+  # second copy of each to every series in the database.
+  promote_resource_attributes:
+    - deployment.environment
+    - service.version
+
+  # Dots to underscores, `_total` on monotonic counters, the unit appended as a
+  # suffix. Stated rather than defaulted because it is the difference between a
+  # dashboard querying `threshold_match_decisions_total` and one querying
+  # `threshold_match_decisions`, and a dashboard that names the wrong series
+  # renders an empty panel rather than an error.
+  translation_strategy: UnderscoreEscapingWithSuffixes
+
+  # Leave the identifying attributes consumed into job/instance rather than
+  # repeated back into target_info.
+  keep_identifying_resource_attributes: false
+
+  # Keep classic _bucket/_count/_sum with an `le` label, so the explicit
+  # boundaries chosen in observability/metrics.py survive into the exposition
+  # and histogram_quantile() keeps working.
+  convert_histograms_to_nhcb: false
+
+storage:
+  tsdb:
+    # Push, unlike scrape, has no single clock. Two services exporting on their
+    # own 15s timers are not synchronised with each other or with the TSDB head,
+    # so a sample that lands slightly late is rejected as out of order without
+    # this. Thirty minutes is far more slack than the export interval needs and
+    # costs nothing at this volume.
+    out_of_order_time_window: 30m

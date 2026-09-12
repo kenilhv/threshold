@@ -116,13 +116,24 @@ class TestTheSnapshotExpires:
         assert m._queue._taken_at <= time.monotonic()
 
 
-class TestOldestAgeDistinguishesEmptyFromNew:
-    def test_an_empty_queue_reports_nothing_rather_than_zero(self, recording: Recording) -> None:
-        """Zero would mean "the oldest job arrived this instant", which is the
-        opposite of "there are no jobs" for an alert that fires on age."""
+class TestOldestAgeSeparatesEmptyFromUnobserved:
+    """Absence has to mean one thing, and it means nobody is watching.
+
+    An empty queue reports zero. Omitting it instead would make "nothing is
+    waiting" and "the worker that publishes this is dead" the same signal, and
+    the second is the one worth paging someone about.
+    """
+
+    def test_an_empty_queue_reports_zero(self, recording: Recording) -> None:
         m.publish_queue_snapshot(
             depth_by_state={}, oldest_pending_age_seconds=None, dead_letters_unreplayed=0
         )
+        assert recording.value(m.QUEUE_OLDEST_AGE) == 0.0
+        assert recording.labels(m.QUEUE_OLDEST_AGE) != [], "the series must still exist"
+
+    def test_no_observer_reports_nothing(self, recording: Recording) -> None:
+        """The other half, and the reason the zero above matters."""
+        m.reset_for_testing()
         assert recording.labels(m.QUEUE_OLDEST_AGE) == []
 
     def test_an_age_is_reported_when_something_is_waiting(self, recording: Recording) -> None:

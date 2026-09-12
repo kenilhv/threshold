@@ -1,0 +1,22 @@
+apiVersion: 1
+
+providers:
+  - name: threshold
+    orgId: 1
+    folder: ""
+    type: file
+    # Provisioned dashboards are read-only in the UI on purpose. The panel
+    # titles in these files are referenced by name from the metric registry in
+    # `observability/metrics.py`, and a test asserts every declared consumer
+    # exists -- which only means something while the file is the source of truth.
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
+
+# Measured on this host: `updateIntervalSeconds` did not pick up an edited file
+# within ninety seconds through a Docker Desktop bind mount, though the
+# container could see the new contents. The provisioner definitely runs on
+# every start. So the contract is "restart Grafana to apply a dashboard
+# change", and the interval is left out rather than left in and disbelieved.

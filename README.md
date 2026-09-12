@@ -40,6 +40,9 @@ loads reference data, then starts the API, the worker and the console.
 | Readiness | <http://localhost:8000/readyz> |
 | MinIO console | <http://localhost:9001> — `minioadmin` / `minioadmin` |
 | Keycloak | <http://localhost:8080> — `admin` / `admin` |
+| Dashboards | <http://localhost:3001> — Grafana, no login. Decisions, queue, API. |
+| Traces | <http://localhost:3200> — Tempo. One invoice is one trace across both services. |
+| Metrics | <http://localhost:9090> — Prometheus, receiving OTLP rather than scraping. |
 | **Console** | <http://localhost:3000> — sign in as `clerk`, `buyer`, `receiving`, `treasury`, `controller` or `auditor` |
 
 The seeded users' passwords are their usernames. That is a local fixture and

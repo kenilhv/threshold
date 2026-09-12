@@ -65,8 +65,10 @@ class TestTheRegistryItself:
         """
         planted = m.MetricSpec(
             name="threshold.bad",
+            prometheus_name="threshold_bad",
             labels=frozenset({"disposition", "document_id"}),
-            read_by="nothing",
+            dashboards=("nothing",),
+            alerts=(),
             emitted_by="nowhere",
         )
         assert _forbidden(planted) == {"document_id"}
@@ -76,10 +78,35 @@ class TestTheRegistryItself:
 
         `trace_id` held the wrong value for three milestones and
         `DeadLetter.dedupe_key` has never been written; both were declared and
-        never read. A dashboard panel or an alert rule has to be named.
+        never read. A dashboard panel or an alert rule has to be named — and
+        `test_dashboard.py` then checks the named panel actually exists.
         """
-        unread = [spec.name for spec in m.REGISTRY if not spec.read_by.strip()]
+        unread = [spec.name for spec in m.REGISTRY if not spec.consumers]
         assert not unread, f"no consumer declared for: {unread}"
+
+    def test_a_consumer_name_is_not_blank(self) -> None:
+        """An empty string would satisfy the check above and name nothing."""
+        blank = [spec.name for spec in m.REGISTRY if any(not c.strip() for c in spec.consumers)]
+        assert not blank, f"blank consumer name on: {blank}"
+
+    def test_every_instrument_says_what_prometheus_calls_it(self) -> None:
+        """The name a dashboard has to query, which is not the name here.
+
+        Checked for shape only; `test_telemetry_stack.py` checks it against a
+        running Prometheus, which is the only place the claim can be settled.
+        """
+        for spec in m.REGISTRY:
+            assert spec.prometheus_name, spec.name
+            assert "." not in spec.prometheus_name, (
+                f"{spec.prometheus_name} still has a dot; Prometheus replaces them"
+            )
+            # Prometheus only ever ADDS to the underscored name -- a unit
+            # suffix, a `_total` -- so the underscored form is always a prefix
+            # of it. A typo like `threshhold_...` fails here rather than as a
+            # blank panel nobody looks at.
+            assert spec.prometheus_name.startswith(spec.name.replace(".", "_")), (
+                f"{spec.prometheus_name} is not {spec.name} with its dots replaced"
+            )
 
     def test_names_are_unique(self) -> None:
         names = [spec.name for spec in m.REGISTRY]

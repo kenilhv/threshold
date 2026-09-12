@@ -65,18 +65,18 @@ def configure_tracing(settings: Settings, *, app: FastAPI | None = None) -> None
         # trace and a metric describing the same incident agree about which
         # service produced them.
         provider = TracerProvider(resource=resource_for(settings))
-        if settings.otel_exporter_otlp_endpoint:
+        if settings.otel_traces_endpoint:
             provider.add_span_processor(
                 BatchSpanProcessor(
                     OTLPSpanExporter(
-                        endpoint=f"{settings.otel_exporter_otlp_endpoint.rstrip('/')}/v1/traces"
+                        endpoint=f"{settings.otel_traces_endpoint.rstrip('/')}/v1/traces"
                     )
                 )
             )
             log.info(
                 "tracing.exporting",
                 service=settings.service_name,
-                endpoint=settings.otel_exporter_otlp_endpoint,
+                endpoint=settings.otel_traces_endpoint,
             )
         else:
             # Spans are still created and still carry a valid trace id, which is

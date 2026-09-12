@@ -28,6 +28,12 @@ x-app-env: &app-env
   # derived from the issuer: the issuer is an identity and this is a route, and
   # inside the compose network the route is a different host.
   THRESHOLD_OIDC_JWKS_URL: http://keycloak:8080/realms/threshold/protocol/openid-connect/certs
+  # OTLP base URLs; the SDK appends /v1/traces and /v1/metrics. Two of them
+  # because they really are two backends -- spans to Tempo, metrics to
+  # Prometheus's OTLP receiver -- and collapsing them would mean running a
+  # collector on this host for no purpose but to fan out two streams.
+  THRESHOLD_OTEL_TRACES_ENDPOINT: http://tempo:4318
+  THRESHOLD_OTEL_METRICS_ENDPOINT: http://prometheus:9090/api/v1/otlp
 
 services:
   # Every long-running service restarts; the one-shot jobs (migrate, seed,
@@ -244,6 +250,107 @@ services:
     command: ["python", "-m", "threshold.workers.main"]
     restart: unless-stopped
 
+  # ------------------------------------------------------------- telemetry ---
+  # Metrics are PUSHED to Prometheus over OTLP rather than scraped. That is the
+  # unusual choice here, and it is deliberate: the worker has no HTTP server, so
+  # a scrape model would mean giving it one purely to be scraped, or running a
+  # collector to scrape on its behalf. Prometheus 3 can receive OTLP directly,
+  # which removes both. The trade is that push has no `up` metric and no scrape
+  # staleness, so an alert on "the worker stopped reporting" has to be written
+  # with absent() rather than by waiting for a series to vanish -- a pushed
+  # series stays queryable for the 5m lookback and then simply stops answering.
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    command:
+      # Supplying `command` replaces the image's default, so the config and
+      # storage paths have to be restated or Prometheus looks for /prometheus.yml
+      # and exits.
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      # The one flag that creates POST /api/v1/otlp/v1/metrics. Without it the
+      # path 404s and the exporter retries for ever against a healthy server.
+      - --web.enable-otlp-receiver
+    volumes:
+      - ./infra/local/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    healthcheck:
+      # No curl in this image.
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  tempo:
+    image: grafana/tempo:2.10.8
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ./infra/local/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    ports:
+      # 3200 is the query API, which `make smoke` reads a trace back through.
+      # 4317/4318 stay on the compose network; nothing on the host pushes spans.
+      - "3200:3200"
+    restart: unless-stopped
+    # The one service here without a healthcheck, and not by oversight. The
+    # image is distroless: no shell, no wget, no curl, so a `test:` has nothing
+    # to run and `CMD-SHELL` fails with "sh: executable file not found". Tempo
+    # does serve /ready -- `make smoke` checks it from the host, which is where
+    # a check with a working HTTP client lives.
+
+  grafana:
+    image: grafana/grafana:13.2.1
+    environment:
+      # LOCAL ONLY, all four. Anonymous viewing with no login form means anyone
+      # who can reach the port is a signed-in Viewer; this is a demo on a laptop
+      # and the alternative is a password prompt between a stranger and the
+      # point of the project. Anything reachable beyond this host drops these
+      # and puts real auth in front.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      # Not a relaxation: this one is hardening, and it is safe anywhere.
+      GF_AUTH_BASIC_ENABLED: "false"
+      # Without this an anonymous Viewer gets a 302 on /explore, so every
+      # click-through from a panel into a trace dies silently -- the row
+      # highlights and nothing opens.
+      GF_USERS_VIEWERS_CAN_EDIT: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/threshold.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      # Mounted one directory deeper than /etc/grafana/provisioning, which would
+      # hide the image's own plugins/ and alerting/ subdirectories and log two
+      # errors on every boot that look like provisioning failed.
+      - ./infra/local/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./infra/local/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./infra/local/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    # 3001, because 3000 is the console.
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      tempo:
+        # Started, not healthy: Tempo has no healthcheck to wait on (see
+        # above), and Grafana tolerates a datasource that is not answering yet.
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
+
 volumes:
   postgres-data:
   minio-data:
+  prometheus-data:
+  tempo-data:
+  grafana-data:

@@ -7,6 +7,9 @@
 set -euo pipefail
 
 API="${API:-http://localhost:8000}"
+PROM="${PROM:-http://localhost:9090}"
+TEMPO="${TEMPO:-http://localhost:3200}"
+GRAFANA="${GRAFANA:-http://localhost:3001}"
 fail=0
 
 # Counted rather than asserted in prose. A number written into the README
@@ -23,6 +26,20 @@ check() {
     printf '  \033[31mFAIL\033[0m  %-42s got %s, expected %s\n' "$name" "$actual" "$expected"
     fail=1
   fi
+}
+
+# Polls until the expected status, or the budget runs out. Only the telemetry
+# backends use it, and for a specific reason: Tempo reports not-ready while it
+# is cutting a block, which with a one-second flush period it does often. A
+# probe that has to pass on its first poll measures luck rather than readiness.
+retry_http() {
+  local url="$1" want="$2" tries="${3:-15}" code=""
+  for _ in $(seq 1 "$tries"); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" || true)"
+    [[ "$code" == "$want" ]] && break
+    sleep 1
+  done
+  printf '%s' "$code"
 }
 
 echo
@@ -219,6 +236,49 @@ rm -f "$FIXTURE"
 # that the thing works and points at where to look when it does not.
 check "the console refuses the clerk and records the buyer's decision" "0" \
   "$(python scripts/check_console.py >/dev/null 2>&1; echo $?)"
+
+# --- telemetry ---------------------------------------------------------------
+# Three signals, checked where they land rather than where they are emitted.
+# "The exporter is configured" is not the claim worth making; "the backend has
+# it" is, and those two came apart twice in M5.
+
+check "Prometheus is serving" "200" \
+  "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PROM/-/healthy")"
+
+# Tempo has no container healthcheck: its image is distroless, so there is no
+# shell and no HTTP client inside it to run one. This is that check, from a
+# host that has curl.
+check "Tempo is ready" "200" "$(retry_http "$TEMPO/ready" 200)"
+
+check "Grafana is serving" "ok" \
+  "$(curl -s --max-time 10 "$GRAFANA/api/health" | python -c 'import json,sys; print(json.load(sys.stdin)["database"])' 2>/dev/null)"
+
+# The one flag that decides whether any metric is stored at all. Without
+# --web.enable-otlp-receiver this path 404s, the services retry for ever
+# against a perfectly healthy Prometheus, and the dashboard stays empty.
+check "Prometheus accepts OTLP pushes" "405" \
+  "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PROM/api/v1/otlp/v1/metrics")"
+
+# Both services, by name. The worker called itself the API for three
+# milestones, and a metric attributed to the wrong service is worse than one
+# that is missing.
+check "both services are reporting metrics" "2" \
+  "$(curl -s --max-time 10 --get "$PROM/api/v1/query" --data-urlencode 'query=count by (job) (target_info)' | python -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["result"]))' 2>/dev/null)"
+
+# The metric this project exists to produce, asked of the metrics database
+# rather than of the application that emitted it.
+check "the decision counter reached Prometheus" "true" \
+  "$(curl -s --max-time 10 --get "$PROM/api/v1/query" --data-urlencode 'query=sum(threshold_match_decisions_total)' | python -c 'import json,sys; r=json.load(sys.stdin)["data"]["result"]; print(str(bool(r) and float(r[0]["value"][1]) > 0).lower())' 2>/dev/null)"
+
+check "the dashboard is provisioned" "threshold-overview" \
+  "$(curl -s --max-time 10 "$GRAFANA/api/search?type=dash-db" | python -c 'import json,sys; print(next((d["uid"] for d in json.load(sys.stdin) if d["uid"]=="threshold-overview"), "missing"))' 2>/dev/null)"
+
+# The end of the M5 story: a trace id taken out of the audit table in Postgres,
+# looked up in Tempo, and found to contain spans from both processes. That is
+# the promise ARCHITECTURE.md has made since M0, checked against the two
+# systems that would have to agree for it to be true.
+check "an audit row's trace id resolves in Tempo, across both services" "2" \
+  "$(python scripts/check_trace.py 2>/dev/null)"
 
 echo
 if [[ $fail -eq 0 ]]; then

@@ -1,0 +1,53 @@
+# Tempo, single binary, local filesystem storage.
+#
+# The receivers bind 0.0.0.0 explicitly. Tempo's default binds localhost, which
+# inside a container means nothing on the compose network can push a span --
+# and the symptom is an exporter logging connection refused while Tempo sits
+# there reporting healthy, which reads like an application bug for a long time.
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+ingester:
+  # Tuned for a demo, not for a cluster. Out of the box a trace is searchable
+  # six to ten seconds after it is pushed, which is long enough that someone
+  # running `make demo-match` and clicking straight into Grafana concludes the
+  # tracing does not work. These three bring it to one or two seconds.
+  trace_idle_period: 1s
+  flush_check_period: 1s
+  max_block_duration: 5m
+  lifecycler:
+    # /ready otherwise answers "waiting for 15s after being ready" for the first
+    # fifteen seconds, which makes compose's dependency wait needlessly long.
+    min_ready_duration: 1s
+
+compactor:
+  compaction:
+    # This is a laptop and these are demo traces. Nothing here is evidence;
+    # the audit log is the durable record, and it is in Postgres.
+    block_retention: 1h
+
+storage:
+  trace:
+    backend: local
+    blocklist_poll: 1m
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+querier:
+  frontend_worker:
+    # Single binary: the querier talks to the frontend inside this same process.
+    frontend_address: 127.0.0.1:9095

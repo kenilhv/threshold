@@ -15,6 +15,8 @@ up: ## Bring the whole system up and wait until it is actually serving
 	$(COMPOSE) up -d --build --wait
 	@echo
 	@echo "  API      http://localhost:8000/docs"
+	@echo "  Console  http://localhost:3000"
+	@echo "  Grafana  http://localhost:3001  (no login; local only)"
 	@echo "  MinIO    http://localhost:9001  (minioadmin / minioadmin)"
 	@echo "  Keycloak http://localhost:8080  (admin / admin)"
 	@echo

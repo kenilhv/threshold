@@ -33,11 +33,23 @@ class Settings(BaseSettings):
 
     redis_url: RedisDsn
 
-    #: Where traces and metrics are sent. None is a supported configuration,
-    #: not a broken one: the SDK still produces valid spans, so audit rows and
-    #: log lines still correlate, and nothing is exported. That is the right
-    #: default for a unit test and for a laptop with no collector running.
-    otel_exporter_otlp_endpoint: str | None = None
+    #: Where each signal is sent, as an OTLP base URL — the SDK appends
+    #: ``/v1/traces`` and ``/v1/metrics``.
+    #:
+    #: Two settings rather than one because they genuinely go to two different
+    #: places: spans to Tempo, metrics to Prometheus's OTLP receiver. A single
+    #: endpoint was a convenient fiction that held only while both went nowhere,
+    #: and collapsing them again would mean either running a collector purely to
+    #: fan out two streams on one host, or teaching the app that one of its two
+    #: backends lives at a path prefix of the other.
+    #:
+    #: ``None`` is a supported configuration for either, not a broken one. The
+    #: SDK still produces valid spans, so audit rows and log lines still
+    #: correlate; instruments stay real and their measurements are dropped.
+    #: That is the right default for a unit test, and for a laptop where the
+    #: telemetry stack is not running.
+    otel_traces_endpoint: str | None = None
+    otel_metrics_endpoint: str | None = None
 
     # S3-compatible. Locally this is MinIO; in AWS only the endpoint and the
     # credential source change, which is the whole point of using boto3 here
