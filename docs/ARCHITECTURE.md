@@ -466,6 +466,38 @@ The smoke test caught it — 12 rows where 4 were expected. Timestamps now ancho
 to a fixed `SEED_EPOCH`, which keeps the data internally consistent while making
 re-runs produce identical rows.
 
+### The extractor is measured, not asserted
+
+`make eval` renders four hundred invoices across the four layouts, runs the real
+extractor over them, and scores every reading against the spec that produced the
+document. The spec *is* the answer key, so there is no labelling step and the
+ground truth cannot drift from the page — the one thing a hand-labelled corpus
+can never promise.
+
+Two units are measured and the difference between them decides the gate. A
+**field reading** answers "when the extractor says 0.58, is that value right",
+which is the diagnostic. A **document** answers what the gate actually asks: it
+takes a minimum across five fields and approves an invoice, so an invoice with
+four right fields and one wrong total is a wrong invoice.
+
+The auto-approval threshold is derived from the second curve rather than chosen.
+The rule is stateable: the lowest threshold whose *accepted set* has a Wilson
+lower bound on accuracy above the target. Pooled, because a gate selects a set
+and the risk belongs to everything it accepts. A lower bound, because a bucket
+of two readings reporting "100% correct" is noise — that bucket was 60% correct
+at four hundred documents. See D-027.
+
+`evals/baseline.txt` records the result and `make verify` compares against it
+exactly, on integer counts. The harness refuses to report at all if the corpus
+shrank, lost a layout, read nothing correctly, or read *everything* correctly —
+because a corpus with no errors in it calibrates nothing, and every one of those
+failures would otherwise surface as an improvement.
+
+**What it cannot tell you.** The corpus is synthetic. Every check defends
+against the evaluation being *vacuous*; none defends against it being
+*unrepresentative*, and no amount of engineering inside the harness substitutes
+for real documents with a human-made answer key. See D-028.
+
 ---
 
 ## Running this in a cloud

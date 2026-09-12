@@ -86,12 +86,6 @@ class IngestOutcome:
     job_id: str | None
 
 
-#: Derived from a calibration curve in M6. Stated as a constant now, and
-#: deliberately named so it is obvious this is a placeholder rather than a
-#: measured operating point.
-PROVISIONAL_CONFIDENCE_GATE: Final = Decimal("0.80")
-
-
 class IngestService:
     def __init__(self, store: ObjectStore, extractor: Extractor, queue: Queue) -> None:
         self._store = store

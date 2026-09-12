@@ -19,8 +19,12 @@ It exists for three reasons, in order of importance:
 ## How confidence is assigned
 
 Confidence here is *earned from observable signal*, never a constant. A
-hard-coded 0.9 would be a decoration that the calibration work in M6 would
-immediately expose as meaningless. The signals used:
+hard-coded 0.9 would be a decoration, and `make eval` would expose it: over 3000
+documents the signal ranks at AUC 0.99, which a constant cannot do at all. What
+the same measurement also showed is that these numbers are *ordinal and not
+probabilities* -- they calibrate at ECE 0.19, so 0.45 means "more likely right
+than 0.43" and does not mean 45%. The auto-approval gate is derived in a way
+that does not need them to be probabilities; see D-027. The signals used:
 
 * **Label adjacency.** A value found next to a recognised label scores higher
   than the same pattern found loose in the page. "Total: 1,234.56" is stronger

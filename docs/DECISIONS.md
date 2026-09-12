@@ -5,6 +5,93 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-028 — The evaluation defends against being vacuous, not against being wrong
+
+**Date:** 2026-09-12 · **Status:** accepted · **Has a known, unpaid cost**
+
+M6 built an evaluation harness, derived a threshold from it, and put a
+regression gate in CI. This entry records what that machinery is *for*, and —
+more usefully — the one thing it cannot do, so that nobody later mistakes a
+green gate for a claim about production.
+
+### The corpus is its own answer key
+
+Every document is rendered from an `InvoiceSpec`, and that spec is the ground
+truth. There is no labelling step and no transcription, so the answer cannot
+drift from the page. That is worth more than it sounds: a hand-labelled corpus
+decays silently as documents are regenerated, and nobody notices until the
+numbers stop meaning anything.
+
+The price is that ground truth must be *printable*. A spec carrying
+`244615.0647` describes a document that cannot exist, because an invoice prints
+two decimals — and scoring against it marks a perfectly correct reading of
+`244615.06` as wrong. That was a real bug and it cost twelve points of apparent
+accuracy on `total` before anyone checked which of the scorer and the extractor
+was at fault. The corpus now generates money at the precision a page can print
+and a test walks every value asserting it.
+
+### Three ways the evaluation could stop evaluating
+
+Each of these produces a clean, plausible, higher number, because removing
+readings removes the hard ones first.
+
+**A corpus that shrank, or lost a layout, or stopped rendering.** The harness
+refuses to return: it checks the reading count, the document count and the
+layout coverage before anything is reported.
+
+**A corpus with no errors in it.** A run in which everything is read correctly
+calibrates nothing — every bucket is 100%, the curve is a single point, and the
+derived threshold is wherever the code happened to land. The harness refuses
+that too, and a unit test asserts the corpus still contains a confidence value
+that is neither always right nor always wrong, because without one there is no
+boundary to find.
+
+**A scorer that quietly stopped scoring.** `score()` raises if
+`decision_relevant_fields` no longer provides a field it expects, rather than
+measuring four out of five and reporting a better number.
+
+The regression gate runs all of these *before* any comparison against the
+baseline. A gate that compared first could be green against a baseline
+regenerated from an evaluation that had already stopped working.
+
+### The cost, stated plainly
+
+**None of that defends against the corpus being unrepresentative.** The
+documents are synthetic, and the same hand wrote the generator and the
+extractor. The evaluation can verify that the extractor reads what reportlab
+wrote. It cannot verify that what reportlab wrote resembles an invoice a real
+accounts-payable function receives, and the honest expectation is "partly".
+
+So the claim M6 supports is narrow and should be quoted narrowly: *on documents
+of this kind, invoices above the gate are read correctly at a rate whose 99%
+lower bound is 0.9941*. It is not a production accuracy figure, and a reader who
+takes it as one has been misled by the rigour of everything around it — which is
+exactly the failure mode a careful evaluation invites. Precision about the wrong
+population is still wrong, and it is more persuasive than being vague.
+
+The remedy is not more engineering. It is a few dozen real invoices with a
+human-made answer key, held out from everything, scored by the same harness. A
+single day's work, blocked only on having the documents. Until then this is
+measured confidence in a controlled setting rather than evidence about the
+world, and the difference matters most precisely when the numbers look good.
+
+### What the gate does not cover
+
+It scores the five fields that gate a decision, which is deliberately not every
+field the extractor reads. Payment details are the notable omission:
+`decision_relevant_fields` excludes them because an unreadable bank line scores
+0.0 and would trip the confidence gate on every invoice that prints no payment
+block, so that signal has its own path through the exception layer (D-016). A
+change to bank-detail extraction is therefore invisible to `make eval-check`,
+and is covered by the matching tests instead.
+
+That boundary was found by mutating bank-detail extraction and watching the gate
+stay green. It is a coverage boundary rather than a hole — but only because it
+is written down, and it is recorded here because the next person to read
+`check_eval.py` would reasonably assume it covers everything the extractor does.
+
+---
+
 ## D-027 — The auto-approval gate, re-derived from a measured curve
 
 **Date:** 2026-09-12 · **Status:** accepted · **Closes D-014**

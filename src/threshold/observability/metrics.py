@@ -304,8 +304,8 @@ BY_NAME: Final[Mapping[str, MetricSpec]] = {spec.name: spec for spec in REGISTRY
 
 #: Job execution, in seconds. Measured over 317 completed jobs: extract p50
 #: 7 ms / max 41 ms, match p50 3 ms / max 52 ms. The first four boundaries
-#: resolve that range; the tail is kept because M6 replaces the deterministic
-#: extraction tier with a model call, which is seconds rather than milliseconds,
+#: resolve that range; the tail is kept because M7 adds a model tier beside the
+#: deterministic one, and a model call is seconds rather than milliseconds,
 #: and a histogram that has to be re-bucketed to see the change is a histogram
 #: that hides it.
 JOB_DURATION_BUCKETS: Final = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0)

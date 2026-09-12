@@ -88,13 +88,30 @@ It `SIGKILL`s the worker container while it holds a lease — no graceful
 shutdown, no cleanup — then shows the reaper returning the job with its attempt
 history intact.
 
+### How well does it read an invoice?
+
+```bash
+make eval
+```
+
+Renders four hundred invoices across four layouts, runs the real extractor over
+them, and scores every reading against the spec that produced the document. It
+prints two calibration curves — field readings as a diagnostic, whole documents
+as the thing the auto-approval gate is derived from — and re-derives the gate
+from what it finds. No stack required; it takes about fifteen seconds.
+
+The number that comes out of it is in `evals/baseline.txt`, which `make verify`
+compares against on every commit. The line worth reading first is
+`shipped.wrong`: invoices this system would auto-approve on a misreading. It is
+zero, and it is the one number in the file that may only ever fall.
+
 `make test-integration` runs against the live stack. The queue tests provision
 and migrate their own database (`threshold_queue_tests`) rather than sharing one
 with the running worker, which is a real competing consumer — see D-012.
 
 Other useful targets: `make logs`, `make ps`, `make queue-stats`, `make dlq`,
 `make replay id=<uuid>`, `make reap`, `make down`, `make clean` (destroys
-volumes), `make migrate-roundtrip`, `make verify`.
+volumes), `make migrate-roundtrip`, `make eval-check`, `make verify`.
 
 Requires Docker with Compose v2. No cloud account, no API keys, no paid
 services.
@@ -197,7 +214,20 @@ Full reasoning, including what is deliberately *not* distributed and why:
       and deliberately never the identity provider. Nine alert rules, each with
       a test that makes it fire and a test that keeps it quiet, and six runbooks
       that are checked to exist.
-- [ ] M6 — evaluation harness, calibration curve, CI regression gate
+- [x] **M6 — measuring it instead of asserting it.** Four hundred synthetic
+      invoices whose answer key is the spec that rendered them, so ground truth
+      cannot drift from the document. The auto-approval gate is no longer a
+      guess: it was 0.50 and provisional for three milestones, and measurement
+      showed it admitted a bucket of invoices that were *always* misread. It is
+      now 0.60, derived from the pooled accuracy of everything a gate would
+      accept, bounded by a Wilson interval rather than a point estimate, and
+      pinned by a test to the interval the evidence supports. The confidence
+      signal is shown to rank well (AUC 0.99) and calibrate badly (ECE 0.19) —
+      an ordinal score wearing probability clothing — and the gate is derived
+      in a way that does not need it to be a probability. `make verify`
+      compares every count against a committed baseline, exactly, and the
+      harness refuses to report at all if the corpus shrank or stopped
+      producing errors to calibrate against.
 - [ ] M7 — the triage agent and its injection red-team suite
 - [ ] M8 — idempotent payments and a double-entry ledger
 - [ ] M9 — row-level security, pseudonymisation, written threat model

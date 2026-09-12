@@ -56,6 +56,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,fixtures]"
 
+      # lint + the alert-rule tests + the unit suite + the extraction gate.
+      #
+      # Two of those need more than Python. `check-alerts` runs promtool from
+      # the pinned Prometheus image, because the rules are PromQL and only
+      # Prometheus can say what PromQL means. `eval-check` renders four hundred
+      # PDFs through reportlab and reads them back through pypdf, which is why
+      # the install above is [dev,fixtures] rather than [dev]. Neither needs the
+      # compose stack; both need the runner's Docker and its renderer.
       - name: make verify
         run: make verify
 
