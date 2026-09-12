@@ -134,7 +134,6 @@ def client() -> Iterator[TestClient]:
 def _settings(*, issuer: str | None, jwks_url: str | None) -> Settings:
     return Settings(
         database_url="postgresql+asyncpg://u:p@localhost/db",  # type: ignore[arg-type]
-        redis_url="redis://localhost:6379/0",  # type: ignore[arg-type]
         s3_access_key_id="x",
         s3_secret_access_key="x",
         oidc_issuer=issuer,

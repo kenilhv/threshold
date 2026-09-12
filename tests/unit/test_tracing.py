@@ -206,7 +206,6 @@ def _shared_processors() -> list[Any]:
         logging_module.configure_logging(
             Settings(
                 database_url="postgresql+asyncpg://u:p@unit-tests.invalid/db",  # type: ignore[arg-type]
-                redis_url="redis://unit-tests.invalid:6379/0",  # type: ignore[arg-type]
                 s3_access_key_id="x",
                 s3_secret_access_key="x",
             )

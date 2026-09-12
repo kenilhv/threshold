@@ -12,7 +12,6 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.36",
     "alembic>=1.14",
     "asyncpg>=0.30",
-    "redis>=5.2",
     "boto3>=1.35",
     "structlog>=24.4",
     # RS256 verification needs the crypto extra; without it PyJWT raises at
@@ -109,6 +108,7 @@ ignore = ["B008"]      # FastAPI's Depends() in defaults is the documented idiom
 "scripts/queuectl.py" = ["T201"]
 "scripts/check_console.py" = ["T201", "E402", "S101"]
 "scripts/check_trace.py" = ["T201"]
+"scripts/check_metrics.py" = ["T201"]
 # Same reasoning: a demo that printed nothing would demo nothing. E402 is
 # unavoidable here because the repo root has to be on sys.path before the
 # fixture generator can be imported.

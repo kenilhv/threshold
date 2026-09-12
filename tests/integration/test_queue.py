@@ -88,10 +88,9 @@ def _migrate() -> None:
     # `migrations/env.py` builds the full Settings object, so every required
     # field has to be present even though a migration touches none of them but
     # the database. Placeholders, not credentials — nothing here connects to
-    # Redis or S3.
+    # S3.
     overrides = {
         "THRESHOLD_DATABASE_URL": DATABASE_URL,
-        "THRESHOLD_REDIS_URL": "redis://localhost:6379/0",
         "THRESHOLD_S3_ACCESS_KEY_ID": "unused-by-migrations",
         "THRESHOLD_S3_SECRET_ACCESS_KEY": "unused-by-migrations",
     }

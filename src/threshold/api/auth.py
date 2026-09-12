@@ -92,6 +92,27 @@ class _JwksCache:
         self._keys.clear()
         self._last_fetch = 0.0
 
+    @property
+    def key_count(self) -> int:
+        """How many signing keys this instance can currently validate against.
+
+        Read by `/readyz`, which reports it and never acts on it. Zero means no
+        token has been validated yet -- the keys are fetched lazily on the first
+        authenticated request -- not that the identity provider is down.
+        """
+        return len(self._keys)
+
+    @property
+    def seconds_since_refresh(self) -> float:
+        """Age of the cached key set. `inf` when nothing has been fetched.
+
+        Monotonic, like the refresh it measures, so a host clock correction
+        cannot make the cache look newly fetched or impossibly old.
+        """
+        if self._last_fetch == 0.0:
+            return float("inf")
+        return time.monotonic() - self._last_fetch
+
     async def key_for(self, kid: str, url: str) -> PyJWK:
         cached = self._keys.get(kid)
         if cached is not None:

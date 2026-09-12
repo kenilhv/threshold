@@ -30,7 +30,7 @@ show where that line is and why it sits there.
 make up
 ```
 
-That is the whole thing. It builds the images, starts Postgres, Redis, MinIO and
+That is the whole thing. It builds the images, starts Postgres, MinIO and
 Keycloak, waits for each to pass its own healthcheck, applies the migrations,
 loads reference data, then starts the API, the worker and the console.
 
@@ -200,7 +200,6 @@ Nothing here is written to be local-only. The differences are two:
 | MinIO | S3 — same `boto3` calls, different endpoint |
 | Postgres container | RDS Postgres |
 | `job` table + `SKIP LOCKED` | SQS with a visibility timeout and redrive policy |
-| Redis container | ElastiCache |
 | Compose services | ECS Fargate tasks behind an ALB |
 | Env files | Secrets Manager |
 | Keycloak | Cognito, or an existing IdP |

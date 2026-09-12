@@ -227,7 +227,6 @@ async def production_engine() -> AsyncIterator[SimpleSpanProcessor]:
     """
     settings = Settings(
         database_url=DATABASE_URL,  # type: ignore[arg-type]
-        redis_url="redis://localhost:6379/0",  # type: ignore[arg-type]
         s3_access_key_id="unused",
         s3_secret_access_key="unused",
     )

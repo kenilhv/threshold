@@ -55,7 +55,7 @@ migrate: ## Apply migrations
 .PHONY: migration
 migration: ## Autogenerate a migration:  make migration m="add invoice table"
 	@test -n "$(m)" || { echo 'usage: make migration m="what changed"'; exit 1; }
-	THRESHOLD_DATABASE_URL=postgresql+asyncpg://threshold:threshold@localhost:5432/threshold 	THRESHOLD_REDIS_URL=redis://localhost:6379/0 	THRESHOLD_S3_ACCESS_KEY_ID=minioadmin 	THRESHOLD_S3_SECRET_ACCESS_KEY=minioadmin 	python -m alembic revision --autogenerate -m "$(m)"
+	THRESHOLD_DATABASE_URL=postgresql+asyncpg://threshold:threshold@localhost:5432/threshold 	THRESHOLD_S3_ACCESS_KEY_ID=minioadmin 	THRESHOLD_S3_SECRET_ACCESS_KEY=minioadmin 	python -m alembic revision --autogenerate -m "$(m)"
 	@echo "review it before committing: autogenerate does not write partial indexes,"
 	@echo "check constraints it cannot infer, or data migrations."
 

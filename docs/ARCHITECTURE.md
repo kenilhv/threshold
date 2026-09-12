@@ -415,12 +415,23 @@ engineering question ("why was this slow?") then resolve to the same row.
 
 ### Liveness and readiness are different questions
 
-`/healthz` touches nothing. `/readyz` checks Postgres and Redis with a 2-second
-timeout and returns 503 if either is down.
+`/healthz` touches nothing. `/readyz` checks Postgres and the object store with
+a 2-second timeout and returns 503 if either is down.
 
 Conflating them causes outages: a liveness probe that checks the database will
 restart every healthy replica during a failover, turning a recoverable
 dependency blip into a full one.
+
+Readiness deliberately does **not** check the identity provider, and that is a
+decision rather than an omission. An IdP is shared, so checking it fails
+readiness on every instance of every service at the same instant and leaves a
+load balancer nowhere to route — the probe causes a worse outage than the
+fault. It would also be false: signing keys are cached, so an instance that has
+fetched them keeps validating tokens while Keycloak is unreachable. So identity
+is *reported* and never gates routing — how many keys this instance holds and
+how long ago it learned them, read from cache without calling Keycloak. Each
+dependency carries `required` on the wire, so the response says why an instance
+is ready with something in the list not ok. See D-025.
 
 ### Money is `NUMERIC(18,4)` and `Decimal` end to end
 
@@ -464,7 +475,6 @@ re-runs produce identical rows.
 | MinIO | S3 | endpoint URL |
 | Postgres container | RDS Postgres | connection string |
 | `job` table + `SKIP LOCKED` | SQS + visibility timeout + redrive | queue driver (behind an interface) |
-| Redis container | ElastiCache | connection string |
 | Compose services | ECS Fargate behind an ALB | none |
 | Env files | Secrets Manager | secret source (behind an interface) |
 | Keycloak | Cognito or an existing IdP | issuer URL |

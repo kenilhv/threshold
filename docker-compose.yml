@@ -7,9 +7,10 @@
 #
 # Cloud mapping — the only things that change are the endpoint and the
 # credential source, which is why boto3 is used locally rather than a MinIO SDK:
-#   postgres  -> RDS Postgres          minio    -> S3
-#   redis     -> ElastiCache           keycloak -> Cognito / an existing IdP
-#   api,worker-> ECS Fargate tasks
+#   postgres   -> RDS Postgres         minio      -> S3
+#   keycloak   -> Cognito or an existing IdP
+#   prometheus -> Managed Prometheus   tempo      -> X-Ray or Managed Grafana
+#   api,worker -> ECS Fargate tasks
 
 name: threshold
 
@@ -17,7 +18,6 @@ x-app-env: &app-env
   THRESHOLD_ENVIRONMENT: local
   THRESHOLD_LOG_LEVEL: INFO
   THRESHOLD_DATABASE_URL: postgresql+asyncpg://threshold:threshold@postgres:5432/threshold
-  THRESHOLD_REDIS_URL: redis://redis:6379/0
   THRESHOLD_S3_ENDPOINT_URL: http://minio:9000
   THRESHOLD_S3_ACCESS_KEY_ID: minioadmin
   THRESHOLD_S3_SECRET_ACCESS_KEY: minioadmin
@@ -39,7 +39,7 @@ services:
   # Every long-running service restarts; the one-shot jobs (migrate, seed,
   # minio-init) deliberately do not. The dependencies were missing this until
   # a Docker VM restart proved why it matters: api, worker and console came back
-  # on their own, Postgres, Redis, MinIO and Keycloak did not, and the stack sat
+  # on their own, Postgres, MinIO and Keycloak did not, and the stack sat
   # half-up for eleven hours with the API reporting healthy against a database
   # that was not running. Liveness said yes because liveness is not readiness.
   postgres:
@@ -63,21 +63,6 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    # Redis holds only replayable state — idempotency-key cache, locks, rate
-    # limits. Nothing here is durable, so it is started with persistence off on
-    # purpose: an accidental restore of stale locks is worse than a cold cache.
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
 
   minio:
     image: minio/minio:latest
@@ -181,8 +166,12 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
+      # The bucket, not merely MinIO: ingest stores the object before it writes
+      # the row that describes it, and `/readyz` HEADs the bucket. Waiting on
+      # the server alone would let the API come up reporting itself unready
+      # until `minio-init` happened to finish.
+      minio-init:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     command:
@@ -245,8 +234,12 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
+      # The bucket, not merely MinIO: ingest stores the object before it writes
+      # the row that describes it, and `/readyz` HEADs the bucket. Waiting on
+      # the server alone would let the API come up reporting itself unready
+      # until `minio-init` happened to finish.
+      minio-init:
+        condition: service_completed_successfully
     command: ["python", "-m", "threshold.workers.main"]
     restart: unless-stopped
 

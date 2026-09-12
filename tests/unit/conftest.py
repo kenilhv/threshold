@@ -20,7 +20,6 @@ import os
 _UNREACHABLE: dict[str, str] = {
     "THRESHOLD_ENVIRONMENT": "local",
     "THRESHOLD_DATABASE_URL": "postgresql+asyncpg://unit:unit@unit-tests.invalid:5432/unit",
-    "THRESHOLD_REDIS_URL": "redis://unit-tests.invalid:6379/0",
     "THRESHOLD_S3_ENDPOINT_URL": "http://unit-tests.invalid:9000",
     "THRESHOLD_S3_ACCESS_KEY_ID": "unit",
     "THRESHOLD_S3_SECRET_ACCESS_KEY": "unit",

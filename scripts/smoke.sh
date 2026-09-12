@@ -52,11 +52,16 @@ check "GET /healthz" "200" \
 check "GET /readyz" "200" \
   "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$API/readyz")"
 
-# Named for what readiness actually checks. It is not every dependency: Redis
-# is checked and nothing in the application uses it, while MinIO and Keycloak
-# are used and not checked. Recorded in D-017 as M5's to fix.
-check "readiness reports postgres and redis up" "true" \
-  "$(curl -s --max-time 10 "$API/readyz" | python -c 'import json,sys; print(str(json.load(sys.stdin)["ready"]).lower())')"
+# Readiness now checks what the service actually uses. Both halves are
+# asserted: the required set is exactly postgres and the object store, and
+# the identity provider is present without being able to gate routing.
+check "readiness requires postgres and the object store" "true" \
+  "$(curl -s --max-time 10 "$API/readyz" | python -c 'import json,sys; d=json.load(sys.stdin); req={x["name"] for x in d["dependencies"] if x["required"]}; print(str(d["ready"] and req == {"postgres","object_store"}).lower())')"
+
+# D-025 asserted rather than described: an instance stays in rotation
+# whatever the identity provider is doing.
+check "the identity provider is reported but never required" "false" \
+  "$(curl -s --max-time 10 "$API/readyz" | python -c 'import json,sys; print(str(next(x["required"] for x in json.load(sys.stdin)["dependencies"] if x["name"]=="identity")).lower())')"
 
 # The first assertion in this repository that the API refuses something. Every
 # endpoint was open until M4, including the ones about to authorise payment.
@@ -265,10 +270,13 @@ check "Prometheus accepts OTLP pushes" "405" \
 check "both services are reporting metrics" "2" \
   "$(curl -s --max-time 10 --get "$PROM/api/v1/query" --data-urlencode 'query=count by (job) (target_info)' | python -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["result"]))' 2>/dev/null)"
 
-# The metric this project exists to produce, asked of the metrics database
-# rather than of the application that emitted it.
-check "the decision counter reached Prometheus" "true" \
-  "$(curl -s --max-time 10 --get "$PROM/api/v1/query" --data-urlencode 'query=sum(threshold_match_decisions_total)' | python -c 'import json,sys; r=json.load(sys.stdin)["data"]["result"]; print(str(bool(r) and float(r[0]["value"][1]) > 0).lower())' 2>/dev/null)"
+# Every metric the registry declares, found in Prometheus under the name it
+# claims. `prometheus_name` is a guess about a translation Prometheus does in
+# Go, and a wrong guess is an empty dashboard panel and no error anywhere.
+# Polls: push is not scrape, so a metric recorded by the work above has not
+# necessarily left the process yet.
+check "every declared metric reached Prometheus" "0" \
+  "$(python scripts/check_metrics.py 2>/dev/null)"
 
 check "the dashboard is provisioned" "threshold-overview" \
   "$(curl -s --max-time 10 "$GRAFANA/api/search?type=dash-db" | python -c 'import json,sys; print(next((d["uid"] for d in json.load(sys.stdin) if d["uid"]=="threshold-overview"), "missing"))' 2>/dev/null)"

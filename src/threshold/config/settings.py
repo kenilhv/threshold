@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import PostgresDsn, RedisDsn, field_validator
+from pydantic import PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,8 +30,6 @@ class Settings(BaseSettings):
     db_pool_size: int = 10
     db_max_overflow: int = 5
     db_echo: bool = False
-
-    redis_url: RedisDsn
 
     #: Where each signal is sent, as an OTLP base URL — the SDK appends
     #: ``/v1/traces`` and ``/v1/metrics``.

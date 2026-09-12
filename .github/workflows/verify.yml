@@ -6,7 +6,8 @@
 # those sentences true, and it belongs in the same repository as the claim.
 #
 # Deliberately not the whole suite. Integration tests need Postgres, MinIO,
-# Redis and Keycloak, and the honest split is already drawn in the Makefile:
+# Keycloak and now a telemetry stack, and the honest split is already drawn in
+# the Makefile:
 # `make verify` is lint plus the tests that need no stack, and it is what a
 # contributor can run locally before pushing. Standing the full compose stack up
 # in CI is worth doing when there is something CI would catch that a developer

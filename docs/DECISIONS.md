@@ -5,6 +5,71 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-025 — Readiness checks what the service uses, and never the identity provider
+
+**Date:** 2026-09-11 · **Status:** accepted · **Fixed**
+
+`/readyz` checked Postgres and Redis. Nothing in this application has ever used
+Redis. MinIO and Keycloak are used by every upload and every authenticated
+route, and neither was checked — so with only Keycloak down the API reported
+itself ready while every authenticated call returned 503. D-017 recorded this as
+M5's to fix and asked the question that matters: whether a shared identity
+provider belongs in readiness at all.
+
+It does not, and the reasoning is the substance of this entry.
+
+**Readiness is not a status page.** It answers one question: should a load
+balancer send this instance a request. Every dependency it checks is a
+dependency that can pull the instance out of rotation. An identity provider is
+shared, so checking it fails readiness on every instance of every service at the
+same instant, and there is nowhere left to route. The probe then causes an
+outage strictly worse than the fault it is reporting — a degraded system becomes
+a total one.
+
+**It would also be false.** Signing keys are cached per instance, so a server
+that has already fetched them keeps validating tokens perfectly well while
+Keycloak is unreachable. Marking it unready removes a working server.
+
+So identity is reported and never gates routing: how many keys this instance
+holds and how long ago it learned them. That is the number an operator wants
+during an IdP incident, because it distinguishes the instances that can still
+authenticate from the ones that will start returning 503 on their next unknown
+key. The report reads cached state and never calls Keycloak — compose polls
+`/readyz` every five seconds for ever, and a readiness probe that fetches JWKS
+is a denial of service against the IdP, aimed by the thing meant to be watching
+it. A test asserts the probe never calls out.
+
+What *is* required is Postgres and the object store. The object store because
+D-006 stores the bytes before writing the row that describes them: an instance
+whose bucket is unreachable cannot accept a document at all. The check is a
+`HEAD` against the bucket rather than `exists()` on a key, because `head_object`
+returns the same 404 for a missing key and a missing bucket — fine for the
+question `exists` asks, useless here, where one means every upload fails and the
+other means nothing.
+
+`required` is on the wire rather than implied, so the answer to "why is this
+instance ready when something in its list is not ok" is in the response instead
+of in someone's memory of the module.
+
+The endpoint had **no tests at all**, which is how the wrong dependency list
+survived four milestones. It has twelve now, and five mutations were applied and
+watched to fail before they were kept: making identity required, ignoring
+`required` when computing readiness, dropping the object store check, marking
+every dependency optional, and giving liveness a database call.
+
+**Redis is gone**, not merely unchecked: the container, the dependency in
+`pyproject.toml`, the setting, the compose service and both `depends_on` blocks,
+the Makefile's migration target, four test fixtures, the CI comment and the
+cloud-mapping tables. It was in the stack from M0 on the strength of a plan —
+idempotency cache, locks, rate limits — and none of it was ever built, because
+idempotency landed in Postgres where it could share a transaction with the work
+it protects, and the queue's locking is `SELECT … FOR UPDATE SKIP LOCKED`. A
+dependency kept for a future that already resolved differently is a dependency
+to remove. `api` and `worker` now wait on `minio-init` instead, which is what
+they actually need: the bucket, not merely the server.
+
+---
+
 ## D-024 — Metrics are pushed to Prometheus over OTLP, and there is no collector
 
 **Date:** 2026-09-11 · **Status:** accepted
@@ -441,7 +506,7 @@ Found and fixed while verifying, each of which would have failed quietly:
 
 **Unpaid costs:**
 
-- **Readiness checks the wrong dependencies.** It checks Postgres and Redis.
+- **Readiness checks the wrong dependencies.** *(Closed by D-025.)* It checks Postgres and Redis.
   Nothing in the application uses Redis; MinIO (ingest) and Keycloak (every
   authenticated route) are used and not checked, so with only Keycloak down,
   readiness says ready while authenticated calls return 503. The smoke check was

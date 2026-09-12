@@ -20,7 +20,7 @@ from typing import Protocol, runtime_checkable
 import boto3
 import structlog
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError, EndpointConnectionError
 
 from threshold.config.settings import Settings
 
@@ -40,6 +40,18 @@ class ObjectStore(Protocol):
     async def get(self, key: str) -> bytes: ...
 
     async def exists(self, key: str) -> bool: ...
+
+    async def reachable(self) -> None:
+        """Raise ``ObjectStoreError`` if documents could not be stored right now.
+
+        Separate from ``exists`` because ``exists`` cannot answer this. A
+        ``head_object`` against a bucket that does not exist returns the same
+        404 as a key that does not exist, so "the object is missing" and "the
+        bucket is missing" are one answer -- fine for the question ``exists``
+        asks, useless for readiness, where the second means every upload will
+        fail and the first means nothing at all.
+        """
+        ...
 
 
 def storage_key_for(content_sha256: str, extension: str) -> str:
@@ -123,6 +135,22 @@ class S3ObjectStore:
         except ClientError as exc:
             raise ObjectStoreError(f"failed to stat {key}") from exc
 
+    async def reachable(self) -> None:
+        """One HEAD against the bucket itself. No object is read or written.
+
+        `head_bucket` rather than listing: a list is O(objects) at the server
+        and this runs on every readiness probe, which compose issues every five
+        seconds for as long as the stack is up.
+        """
+
+        def _head() -> None:
+            self._client.head_bucket(Bucket=self._bucket)
+
+        try:
+            await asyncio.to_thread(_head)
+        except (ClientError, EndpointConnectionError, BotoCoreError) as exc:
+            raise ObjectStoreError(f"bucket {self._bucket} is not usable") from exc
+
 
 class InMemoryObjectStore:
     """For unit tests. Same contract, no container.
@@ -147,5 +175,9 @@ class InMemoryObjectStore:
         return key in self._objects
 
     @property
+    async def reachable(self) -> None:
+        """Always. A dict cannot be unreachable."""
+        return None
+
     def keys(self) -> list[str]:
         return sorted(self._objects)
