@@ -5,6 +5,118 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-027 — The auto-approval gate, re-derived from a measured curve
+
+**Date:** 2026-09-12 · **Status:** accepted · **Closes D-014**
+
+D-014 set this task three milestones ago and set its terms: the gate is 0.50,
+nobody validated it, and it "has to be re-derived from the calibration curve
+rather than tuned until the demo looks good. Tuning it against a fixture is how
+a control becomes a decoration."
+
+It is now **0.60**, and the policy version moved to `2026.09.2` because a
+tolerance is stamped on every decision and changing one is an event with a name.
+
+### What was measured
+
+Four hundred synthetic invoices for the regression gate, three thousand for this
+derivation, rendered across four layouts from specs that are their own answer
+key. `make eval` reproduces it. Over 3000 documents the gate's own input takes
+four values:
+
+| gate confidence | documents | read correctly | pooled lower bound |
+| --- | --- | --- | --- |
+| 0.616 | 456 | **456 (100%)** | 0.9941 |
+| 0.580 | 12 | **0 (0%)** | 0.9593 |
+| 0.434 | 282 | 59 (20.9%) | 0.6582 |
+| 0.000 | 2250 | 0 (0%) | 0.1606 |
+
+So the evidence identifies an **interval**, not a point. Every threshold in
+(0.580, 0.616] accepts exactly the same invoices and carries exactly the same
+measured risk: 456 accepted, none wrong, and a 99% lower bound of 0.9941 on the
+accuracy of everything let through.
+
+0.60 rather than 0.616 because the interval is what was measured and a point
+inside it is what should be written down. 0.616 is an artefact of this
+extractor's arithmetic — a date found on the line after its label scores
+0.88 × 0.7 — so a threshold pinned to it would flip on a change that altered no
+evidence at all.
+
+**The old 0.50 was not merely unvalidated. It was wrong.** It sat below 0.580,
+so it admitted a bucket in which every single document was misread. On the
+400-document corpus that is three wrong auto-approvals out of fifty-six, a 5.4%
+false-approval rate. Each one is an invoice paid on a misreading. The correction
+tightens a control, which is the direction that needed no courage; what it cost
+was finding out.
+
+### Four ways to derive a confident wrong number, and what was done instead
+
+**A gate selects a set, not a bucket.** The obvious rule — take the lowest
+confidence whose own accuracy clears the target — is wrong, because risk belongs
+to everything accepted rather than to the marginal bucket. On the field-level
+curve it puts the gate at 0.93 and escalates 56 readings that were all correct,
+buying nothing. The statistic is the pooled accuracy of the accepted set.
+
+**A percentage without a sample size is not evidence.** A sixty-document probe
+had a bucket of two readings at "100% correct"; at four hundred documents that
+same bucket is 60%. The normal approximation would have called the first one
+certain — its half-width is zero when every reading is correct — so every bound
+here is Wilson and the gate reads the lower one.
+
+**Binning is a free parameter unless the value is the bin.** Expected
+calibration error on this data ranges from 0.102 to 0.196 by binning alone, with
+no datum changing, and coarsening can only shrink it. One bin per distinct
+confidence value removes the choice and is the maximum over all binnings. ECE is
+reported and is deliberately not the headline: it is dominated by readings the
+gate never accepts.
+
+**Calibrate the gate the system has, not a proxy for it.** Two versions of this
+harness produced complete, plausible reports about a gate that does not exist.
+The first calibrated *field* accuracy, when the gate takes a minimum across five
+fields and approves an *invoice* — a strictly more forgiving question. The
+second calibrated `lowest_decision_confidence`, when the matcher compares
+something else: it drops `vendor_name` once the vendor resolves, on D-014's own
+corroboration argument. Since the extractor scores `vendor_name` 0.45 by
+construction, that harness reported the gate auto-approving nothing whatsoever.
+
+### What this number does not mean
+
+The corpus is synthetic and the same hand wrote the generator and the extractor.
+That bounds the claim, and the bound is not small.
+
+**It is not a production accuracy figure.** It says how this extractor behaves
+on documents of this kind. Whether documents of this kind resemble the invoices
+a real accounts-payable function receives is a question no amount of care inside
+the harness can answer, and the answer is almost certainly "partly".
+
+**It is not evidence the confidence scale means anything.** It still does not.
+The signal ranks at AUC 0.99 and calibrates at ECE 0.19, which is exactly what an
+ordinal score wearing probability clothing looks like: 0.45 does not mean 45%, it
+means "more likely right than 0.43". The gate does not need it to mean 45% — it
+asks only how often the invoices above the line are read correctly, which is
+measurable whether or not the scale is a probability. That is the narrow claim
+being made and it is the only one the data supports.
+
+**Coverage is 15%, and that is the extractor's problem rather than the gate's.**
+Only about one invoice in six clears the bar, because this tier reads `total`
+and `issue_date` well on one of four layouts and poorly on the rest. Lowering
+the gate to raise coverage would buy it entirely with wrong payments: the next
+bucket down is 0% correct. The way to raise coverage is a better extractor,
+which is what the model tier in M7 is for, and the evaluation is now in place to
+say whether it helps rather than to assume it.
+
+### Still unpaid
+
+There is no held-out set of real documents. Every self-check in `make eval`
+defends against the evaluation being *vacuous* — a corpus that silently shrank,
+a scorer that stopped scoring, a curve with no uncertain bucket to find a
+boundary in. None of them defends against it being *unrepresentative*, and no
+CI engineering substitutes for a few dozen real invoices with a human-made
+answer key. That is the honest gap, and it is the same shape as the one D-014
+named: a number can be derived rigorously from the wrong population.
+
+---
+
 ## D-026 — Nine alert rules, each proved to fire and proved to stay quiet
 
 **Date:** 2026-09-11 · **Status:** accepted
@@ -779,7 +891,13 @@ one that was compared and passed.
 
 ## D-014 — The auto-approval gate is provisional, and says so
 
-**Date:** 2026-09-10 · **Status:** accepted · **Has a known, unpaid cost**
+**Date:** 2026-09-10 · **Status:** CLOSED by D-027 on 2026-09-12
+
+> Kept rather than rewritten. It named the cost precisely and set the terms the
+> derivation had to meet, and both are worth reading beside the answer. The
+> number it defends, 0.50, turned out not merely to be unvalidated but to be
+> wrong in the expensive direction: it admitted a bucket of invoices that were
+> measurably always misread.
 
 `minimum_field_confidence` is 0.50. It is the weakest number in the system and
 the one most likely to be wrong.

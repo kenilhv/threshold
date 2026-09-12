@@ -15,6 +15,7 @@ somebody chose.
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 
 import pytest
 from evals.calibration import (
@@ -26,6 +27,8 @@ from evals.calibration import (
     wilson_lower,
 )
 from evals.scoring import FieldScore
+
+from threshold.domain.tolerance import DEFAULT_POLICY
 
 #: (confidence, readings, correct) as measured over 60 documents. The integer
 #: counts are recoverable from the percentages without ambiguity: 46/60 is the
@@ -233,3 +236,48 @@ class TestBinningIsNotAFreeParameter:
         accuracies = [b.accuracy for b in buckets]
         assert accuracies == sorted(accuracies, reverse=True)
         assert not math.isclose(auc(_scores()), 1.0)
+
+
+class TestTheGateSitsWhereTheEvidencePutIt:
+    """The link between `make eval` and the constant the system ships.
+
+    Measured over 3000 corpus invoices at a 0.99 target: every document whose
+    gate confidence was 0.616 or above was read correctly (456 of 456, Wilson
+    lower bound 0.9941), and all twelve at 0.580 were wrong. The evidence
+    identifies an interval rather than a point — every threshold in
+    (0.580, 0.616] accepts exactly the same invoices — so what has to be true of
+    the shipped constant is that it lies inside it.
+
+    Without this, the derivation and the number are two facts in two files with
+    nothing holding them together, which is how a control quietly reverts to a
+    guess.
+    """
+
+    #: The two gate-confidence values the derivation sits between. Both are
+    #: values this extractor really emits.
+    ALWAYS_WRONG = Decimal("0.580")
+    ALWAYS_RIGHT = Decimal("0.616")
+
+    def test_it_rejects_the_bucket_that_was_always_wrong(self) -> None:
+        assert DEFAULT_POLICY.minimum_field_confidence > self.ALWAYS_WRONG
+
+    def test_it_accepts_the_bucket_that_was_always_right(self) -> None:
+        assert DEFAULT_POLICY.minimum_field_confidence <= self.ALWAYS_RIGHT
+
+    def test_it_is_not_pinned_to_the_boundary_itself(self) -> None:
+        """0.616 is an artefact of this extractor's arithmetic -- a date on the
+        following line scores 0.88 x 0.7 -- so a threshold equal to it would
+        flip on a change that altered no evidence. Headroom on both sides."""
+        gate = DEFAULT_POLICY.minimum_field_confidence
+        assert gate - self.ALWAYS_WRONG >= Decimal("0.01")
+        assert self.ALWAYS_RIGHT - gate >= Decimal("0.01")
+
+    def test_the_old_value_would_not_pass_this(self) -> None:
+        """0.50 admitted the bucket that was measurably always wrong, which is
+        what made it a decoration rather than a control."""
+        assert Decimal("0.50") < self.ALWAYS_WRONG
+
+    def test_changing_the_gate_versions_the_policy(self) -> None:
+        """A tolerance is stamped on every decision, so moving one is an event
+        with a name rather than an edit. The version moved with it."""
+        assert DEFAULT_POLICY.version == "2026.09.2"

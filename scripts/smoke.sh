@@ -224,7 +224,7 @@ if [[ -s "$FIXTURE" ]]; then
   check "no check was skipped on the clean path" "0" \
     "$(printf '%s' "$MATCH" | python -c 'import json,sys; print(len(json.load(sys.stdin)["skipped_checks"]))' 2>/dev/null)"
 
-  check "the decision names the policy it applied" "2026.09.1" \
+  check "the decision names the policy it applied" "2026.09.2" \
     "$(printf '%s' "$MATCH" | python -c 'import json,sys; print(json.load(sys.stdin)["policy_version"])' 2>/dev/null)"
 
 

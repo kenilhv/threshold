@@ -444,7 +444,7 @@ def test_the_disposition_is_the_worst_severity_present() -> None:
 def test_the_policy_version_is_stamped_on_the_outcome() -> None:
     """A decision that cannot name the thresholds it used cannot be reproduced."""
     outcome = three_way_match(invoice(), order())
-    assert outcome.policy_version == "2026.09.1"
+    assert outcome.policy_version == "2026.09.2"
 
 
 def test_line_pairs_are_recorded() -> None:

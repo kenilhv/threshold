@@ -658,7 +658,7 @@ class TestTheDecisionRecordsItself:
         assert events[0].actor_type == "system"
         assert events[0].entity_type == "match_result"
         assert after["disposition"] == Disposition.AUTO_APPROVE.value
-        assert after["policy_version"] == "2026.09.1"
+        assert after["policy_version"] == "2026.09.2"
         assert after["exception_codes"] == []
 
     async def test_the_row_lists_the_codes_that_blocked_it(

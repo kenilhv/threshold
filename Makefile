@@ -139,6 +139,10 @@ check-console: ## Drive the console as a clerk and a buyer, and check what it re
 demo-match: ## Three invoices, three decisions, and the reason for each
 	@python scripts/demo_three_way_match.py
 
+.PHONY: eval
+eval: ## Measure the extractor and derive the gate:  make eval [n=400]
+	@PYTHONPATH=. python scripts/evaluate.py -n $(or $(n),400)
+
 .PHONY: demo-alert
 demo-alert: ## Stop the worker and watch QueueObserverStopped notice (~7 min)
 	@python scripts/demo_alert.py

@@ -139,14 +139,19 @@ class TolerancePolicy:
     #: a mean: an average hides one unreadable field behind four clear ones, and
     #: the unreadable one is the one that matters.
     #:
-    #: **Provisional, and the weakest number in this file.** The deterministic
-    #: tier's confidences are ordinal, not calibrated -- 0.88 means "found next
-    #: to its label" and 0.62 means "found on the following line", and neither
-    #: was ever measured against how often those readings are actually right. A
-    #: gate is a probability threshold, so setting one against numbers that are
-    #: not probabilities is guesswork dressed as a control. Until M6 produces a
-    #: calibration curve, this sits at the only boundary the tier's numbers
-    #: genuinely support: between "read something" and "read nothing". See D-014.
+    #: **Derived, and the evidence is reproducible.** It was 0.50 and
+    #: provisional for three milestones, because the deterministic tier's
+    #: confidences are ordinal rather than calibrated: 0.88 means "found next to
+    #: its label" and 0.62 means "found on the following line", and neither was
+    #: measured against how often those readings are actually right.
+    #:
+    #: `make eval` now measures it. Over 3000 synthetic invoices the value is
+    #: still not a probability -- it ranks at AUC 0.99 and calibrates at ECE
+    #: 0.19, which is what an ordinal score wearing probability clothing looks
+    #: like -- but the question a gate asks is narrower than "is this number a
+    #: probability". It asks how often the invoices *above the line* are read
+    #: correctly, and that is measurable whether or not the scale means
+    #: anything. See D-027 for the derivation and its limits.
     minimum_field_confidence: Decimal
 
     def __post_init__(self) -> None:
@@ -164,7 +169,7 @@ class TolerancePolicy:
 #: measure error rather than a rounding artefact -- and caps at five units,
 #: because past that it is a different shipment rather than a miscount.
 DEFAULT_POLICY: Final = TolerancePolicy(
-    version="2026.09.1",
+    version="2026.09.2",
     price=Tolerance(
         absorb_below=Decimal("0.005"),
         percentage=Decimal("2"),
@@ -180,5 +185,20 @@ DEFAULT_POLICY: Final = TolerancePolicy(
         percentage=Decimal("0.5"),
         absolute_cap=Decimal("25"),
     ),
-    minimum_field_confidence=Decimal("0.50"),
+    # Derived, not chosen. Over 3000 corpus invoices the gate's own input
+    # takes four values; every document at 0.616 or above was read correctly
+    # (456 of 456, Wilson lower bound 0.9941 at 99%), and every one of the
+    # twelve at 0.580 was wrong. So the evidence identifies an interval,
+    # (0.580, 0.616], inside which every threshold accepts exactly the same
+    # invoices and carries exactly the same measured risk.
+    #
+    # 0.60 rather than 0.616 because the interval is what was measured and a
+    # point inside it is what should be written down. 0.616 is an artefact of
+    # this extractor's arithmetic -- a date found on the following line scores
+    # 0.88 x 0.7 -- so a threshold pinned to it would flip on a change that did
+    # not alter the evidence at all. 0.60 has headroom on both sides.
+    #
+    # The old 0.50 was not merely unvalidated: it admitted the 0.580 bucket, so
+    # it auto-approved invoices that were measurably always wrong.
+    minimum_field_confidence=Decimal("0.60"),
 )
