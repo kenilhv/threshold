@@ -326,6 +326,8 @@ class TestTheInstrumentationReachesTheEngine:
             assert "threshold:threshold@" not in pool, f"credentials in a label: {pool}"
             assert "@" not in pool, f"a userinfo section survived: {pool}"
 
+
+class TestTheRegistryCoversWhatIsActuallyEmitted:
     async def test_nothing_undeclared_is_exported(
         self,
         sessions: async_sessionmaker[AsyncSession],
