@@ -51,9 +51,9 @@ opened with ``invariant=True`` so reportlab emits a fixed ``/CreationDate`` and 
 fixed document ``/ID``, and the producer string is pinned so output does not shift
 between reportlab releases. Same spec in, byte-identical PDF out.
 
-``InvoiceSpec.expected_fields`` is deliberately **not** rendered: it is the answer
-key the eval harness scores against, not content of the document. ``seed`` is a
-control knob and is likewise not printed. Every other field on the spec appears on
+The spec *is* the answer key — `evals/scoring.py` reads `total`, `issue_date` and
+the rest straight off it — so there is no separate set of expected values to keep
+in step. ``seed`` is a control knob and is not printed. Every other field on the spec appears on
 the page; a spec whose ``total`` is negative renders as a ``GUTSCHRIFT`` /
 ``CREDITFACTUUR`` with the settlement wording a credit note actually carries.
 """

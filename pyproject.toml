@@ -77,7 +77,11 @@ warn_unreachable = true
 disallow_any_explicit = false          # SQLAlchemy and boto3 stubs need some
 plugins = []
 mypy_path = "src"
-packages = ["threshold"]
+# `evals` produces the numbers that gate CI, so it is checked as strictly as the
+# service is. `seeds` is not: it is a thousand lines of reportlab canvas calls
+# against an untyped library, and bringing it under --strict is its own piece of
+# work rather than a side effect of this one.
+packages = ["threshold", "evals"]
 
 [[tool.mypy.overrides]]
 module = ["boto3.*", "botocore.*"]

@@ -67,17 +67,13 @@ class TestEveryRuleIsUsable:
         for rule in rules:
             assert rule.get("for"), f"{rule['alert']} has no `for` duration"
 
-    def test_each_rule_says_what_happened_and_what_to_do(
-        self, rules: list[dict[str, Any]]
-    ) -> None:
+    def test_each_rule_says_what_happened_and_what_to_do(self, rules: list[dict[str, Any]]) -> None:
         for rule in rules:
             annotations = rule.get("annotations", {})
             assert annotations.get("summary"), f"{rule['alert']} has no summary"
             assert annotations.get("description"), f"{rule['alert']} has no description"
 
-    def test_each_rule_links_to_a_runbook_that_exists(
-        self, rules: list[dict[str, Any]]
-    ) -> None:
+    def test_each_rule_links_to_a_runbook_that_exists(self, rules: list[dict[str, Any]]) -> None:
         """The assertion this file exists for.
 
         A path that looks right and resolves to nothing is discovered by
@@ -99,14 +95,10 @@ class TestEveryRuleIsUsable:
     def test_every_runbook_is_reached_by_some_rule(self, rules: list[dict[str, Any]]) -> None:
         """A runbook nobody links to is a document nobody will find."""
         linked = {rule["annotations"]["runbook_url"] for rule in rules}
-        on_disk = {
-            f"docs/runbooks/{path.name}" for path in (ROOT / "docs/runbooks").glob("*.md")
-        }
+        on_disk = {f"docs/runbooks/{path.name}" for path in (ROOT / "docs/runbooks").glob("*.md")}
         assert on_disk - linked == set(), f"unreferenced runbooks: {sorted(on_disk - linked)}"
 
-    def test_each_runbook_names_the_alerts_it_serves(
-        self, rules: list[dict[str, Any]]
-    ) -> None:
+    def test_each_runbook_names_the_alerts_it_serves(self, rules: list[dict[str, Any]]) -> None:
         """Someone arriving from a page must see their alert named at the top,
         or they cannot tell whether they are in the right document."""
         for rule in rules:
@@ -169,9 +161,7 @@ class TestEveryRuleIsTestedBothWays:
             for case in test["alert_rule_test"]
             if case.get("exp_alerts")
         }
-        assert _names(rules) <= firing, (
-            f"never proved to fire: {sorted(_names(rules) - firing)}"
-        )
+        assert _names(rules) <= firing, f"never proved to fire: {sorted(_names(rules) - firing)}"
 
     def test_each_rule_has_a_test_that_keeps_it_quiet(
         self, rules: list[dict[str, Any]], rule_tests: list[dict[str, Any]]
@@ -197,8 +187,10 @@ class TestEveryRuleIsTestedBothWays:
         Found by mutating the rules and watching the tests not notice. The
         inputs must move, or the guard is not what is being tested.
         """
-        for name in ("a quiet night does not page about arithmetic",
-                     "a nearly idle api where every request fails does not page"):
+        for name in (
+            "a quiet night does not page about arithmetic",
+            "a nearly idle api where every request fails does not page",
+        ):
             test = next(t for t in rule_tests if t["name"] == name)
             moving = [s for s in test["input_series"] if not re.search(r"\+0x|^\d+$", s["values"])]
             assert moving, f"{name!r} has no counter that moves; it cannot exercise a guard"

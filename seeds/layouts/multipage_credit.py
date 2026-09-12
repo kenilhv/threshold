@@ -312,11 +312,10 @@ class _Renderer:
         self.brought_label = _BROUGHT_LABELS[rng.randrange(len(_BROUGHT_LABELS))]
         self.carried_label = _CARRIED_LABELS[rng.randrange(len(_CARRIED_LABELS))]
         self.boilerplate = _BOILERPLATE[rng.randrange(len(_BOILERPLATE))]
-        derived_original = _derive_original_reference(spec.invoice_number, rng)
-        self.original_reference = str(
-            spec.expected_fields.get("original_invoice_number")
-            or spec.expected_fields.get("original_invoice")
-            or derived_original
+        # Derived unless the spec names one. The two dictionary spellings this
+        # used to accept were both unreachable: nothing ever populated the dict.
+        self.original_reference = spec.references_invoice or _derive_original_reference(
+            spec.invoice_number, rng
         )
 
         page_size = LETTER if self.currency in _LETTER_CURRENCIES else A4

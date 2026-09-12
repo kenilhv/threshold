@@ -12,7 +12,7 @@ golden set that silently stops being golden.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -73,9 +73,17 @@ class InvoiceSpec:
     #: Seeds every random choice a renderer makes. Same seed, same bytes.
     seed: int = 0
 
-    #: Set by the fixture builder, not by renderers. The expected extraction
-    #: result for this document — the labels the eval harness scores against.
-    expected_fields: dict[str, str] = field(default_factory=dict)
+    #: The invoice a credit note reverses, printed on the page.
+    #:
+    #: This replaced `expected_fields: dict[str, str]`, which was declared as
+    #: "the answer key the eval harness scores against", was read by the
+    #: credit-note layout as *rendering input*, and was never written by
+    #: anything. Three statements, no two of which agreed.
+    #:
+    #: There is no answer key beside the spec because the spec is the answer
+    #: key: `evals/scoring.py` reads `total` and `issue_date` straight off it.
+    #: A second copy of the truth is a second thing to keep in step.
+    references_invoice: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("subtotal", "tax_rate", "tax_amount", "total"):
