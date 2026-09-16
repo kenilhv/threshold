@@ -289,6 +289,20 @@ check "the alert rules are loaded" "9" \
 check "every alert rule evaluates" "0" \
   "$(curl -s --max-time 10 "$PROM/api/v1/rules" | python -c 'import json,sys; rules=[r for g in json.load(sys.stdin)["data"]["groups"] for r in g["rules"]]; print(len([r for r in rules if r.get("health") != "ok"]))' 2>/dev/null)"
 
+# The money, in the running stack. `balanced` is the oldest check in accounting
+# and the one number that goes false the moment anything anywhere has gone
+# wrong -- including things no test can reach, like a restore from a bad backup
+# or an afternoon of manual SQL during an incident.
+check "the books balance" "true" \
+  "$(curl -s --max-time 10 -H "Authorization: Bearer $TOKEN" "$API/v1/ledger/trial-balance" \
+    | python -c 'import json,sys; print(str(json.load(sys.stdin)["balanced"]).lower())' 2>/dev/null)"
+
+# A vacuity guard on the line above. An empty ledger balances perfectly, so
+# "balanced" only means something once money has actually moved through it.
+check "and there is something in them to balance" "true" \
+  "$(curl -s --max-time 10 -H "Authorization: Bearer $TOKEN" "$API/v1/ledger/trial-balance" \
+    | python -c 'import json,sys; print(str(any(a["amount_minor"] != 0 for a in json.load(sys.stdin)["accounts"])).lower())' 2>/dev/null)"
+
 check "the dashboard is provisioned" "threshold-overview" \
   "$(curl -s --max-time 10 "$GRAFANA/api/search?type=dash-db" | python -c 'import json,sys; print(next((d["uid"] for d in json.load(sys.stdin) if d["uid"]=="threshold-overview"), "missing"))' 2>/dev/null)"
 

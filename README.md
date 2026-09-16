@@ -157,6 +157,23 @@ projection rather than hashed, because a hash of a bank number is still a bank
 number to anyone holding a candidate list. The agent sees `bank_changed: true`,
 never the account. It cannot leak what it never held.
 
+**Money moves through a ledger Postgres will not let you unbalance.** Every
+payment is a set of postings that sum to zero, checked at `COMMIT` by a deferred
+constraint trigger rather than by a service method somebody has to remember to
+call. The trigger fires on `UPDATE` and `DELETE` as well as `INSERT`, because
+removing a good entry from a transaction that already balanced is the quiet
+attack on a ledger. `/v1/ledger/trial-balance` serves the one number that goes
+non-zero the moment anything anywhere has gone wrong, and the smoke test asserts
+it against the running stack.
+
+**A payment is committed as `submitting` before the rail is called.** That state
+is the whole design: a rail that does not answer may still have taken the money,
+so writing `failed` on a timeout is how a supplier gets paid twice. Instead the
+row stays where it is and the next attempt sends the *same* idempotency key,
+derived from the approval decision that authorised it — which is also what the
+payment row is unique on, so three mechanisms say the same thing in three places
+and can catch each other failing.
+
 The default action of the whole system is to do nothing and ask a human.
 Automation is opt-in per rule.
 
@@ -240,7 +257,7 @@ Full reasoning, including what is deliberately *not* distributed and why:
       harness refuses to report at all if the corpus shrank or stopped
       producing errors to calibrate against.
 - [x] M7 — the triage agent and its injection red-team suite
-- [ ] M8 — idempotent payments and a double-entry ledger
+- [x] M8 — idempotent payments and a double-entry ledger
 - [ ] M9 — row-level security, pseudonymisation, written threat model
 - [ ] M10 — Terraform, load test, measured numbers
 

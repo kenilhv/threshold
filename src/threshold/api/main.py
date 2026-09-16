@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from threshold.adapters.db import dispose_engine, init_engine
-from threshold.api.routes import approvals, documents, health, identity
+from threshold.api.routes import approvals, documents, health, identity, ledger
 from threshold.config.settings import get_settings
 from threshold.observability.logging import configure_logging
 from threshold.observability.metrics import configure_metrics
@@ -116,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(identity.router, prefix="/v1")
     app.include_router(documents.router)
     app.include_router(approvals.router)
+    app.include_router(ledger.router)
 
     # Logging first: `create_app` runs at import, so anything configure_tracing
     # logs would otherwise be rendered with structlog's defaults -- a

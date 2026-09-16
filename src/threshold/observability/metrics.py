@@ -76,6 +76,7 @@ from opentelemetry.sdk.metrics.view import DropAggregation, View
 
 from threshold.config.settings import Settings
 from threshold.domain.jobs import JobKind, JobState
+from threshold.domain.payments import PaymentState
 from threshold.observability.resource import resource_for
 
 log = structlog.get_logger(__name__)
@@ -158,6 +159,8 @@ QUEUE_WAIT: Final = "threshold.job.queue.wait"
 QUEUE_DEPTH: Final = "threshold.job.queue.depth"
 QUEUE_OLDEST_AGE: Final = "threshold.job.queue.oldest.age"
 DEAD_LETTERS: Final = "threshold.job.dead_letters"
+PAYMENTS_IN_FLIGHT: Final = "threshold.payment.in_flight"
+PAYMENT_OLDEST_SUBMITTING: Final = "threshold.payment.oldest_submitting.age"
 
 HTTP_DURATION: Final = "http.server.duration"
 HTTP_ACTIVE_REQUESTS: Final = "http.server.active_requests"
@@ -223,6 +226,22 @@ REGISTRY: Final[tuple[MetricSpec, ...]] = (
         labels=frozenset({"state"}),
         dashboards=("Queue depth",),
         alerts=("QueueBacklogGrowing", "QueueObserverStopped"),
+        emitted_by="worker",
+    ),
+    MetricSpec(
+        name=PAYMENTS_IN_FLIGHT,
+        prometheus_name="threshold_payment_in_flight",
+        labels=frozenset({"state"}),
+        dashboards=("Payments in flight",),
+        alerts=("PaymentObserverStopped",),
+        emitted_by="worker",
+    ),
+    MetricSpec(
+        name=PAYMENT_OLDEST_SUBMITTING,
+        prometheus_name="threshold_payment_oldest_submitting_age_seconds",
+        labels=frozenset(),
+        dashboards=("Oldest payment in flight",),
+        alerts=("PaymentStuckInFlight",),
         emitted_by="worker",
     ),
     MetricSpec(
@@ -578,19 +597,33 @@ class QueueSnapshot:
 SNAPSHOT_TTL: Final = timedelta(seconds=90)
 
 
-class _SnapshotHolder:
+@dataclass(frozen=True, slots=True)
+class PaymentSnapshot:
+    """What one worker last saw when it looked at the payments in flight.
+
+    Separate from `QueueSnapshot` rather than folded into it, because they
+    answer different questions and would otherwise expire together: a queue
+    observer that stops must blink out the queue series, and it must not also
+    blink out the money.
+    """
+
+    count_by_state: Mapping[str, int]
+    oldest_submitting_age_seconds: float | None
+
+
+class _SnapshotHolder[Snapshot]:
     """Written by the worker's loop, read by the exporter's thread.
 
-    A lock rather than relying on the GIL: the callback reads three fields and
+    A lock rather than relying on the GIL: the callback reads several fields and
     must not see a half-updated pair. Held for a reference swap only.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._snapshot: QueueSnapshot | None = None
+        self._snapshot: Snapshot | None = None
         self._taken_at = 0.0
 
-    def publish(self, snapshot: QueueSnapshot) -> None:
+    def publish(self, snapshot: Snapshot) -> None:
         with self._lock:
             self._snapshot = snapshot
             # Monotonic, so a host clock correction cannot make a fresh
@@ -598,7 +631,7 @@ class _SnapshotHolder:
             # alive.
             self._taken_at = time.monotonic()
 
-    def current(self) -> QueueSnapshot | None:
+    def current(self) -> Snapshot | None:
         with self._lock:
             if self._snapshot is None:
                 return None
@@ -612,7 +645,8 @@ class _SnapshotHolder:
             self._taken_at = 0.0
 
 
-_queue = _SnapshotHolder()
+_queue: _SnapshotHolder[QueueSnapshot] = _SnapshotHolder()
+_payments: _SnapshotHolder[PaymentSnapshot] = _SnapshotHolder()
 
 
 def publish_queue_snapshot(
@@ -639,6 +673,48 @@ def publish_queue_snapshot(
             dead_letters_unreplayed=dead_letters_unreplayed,
         )
     )
+
+
+def publish_payment_snapshot(
+    *,
+    count_by_state: Mapping[str, int],
+    oldest_submitting_age_seconds: float | None,
+) -> None:
+    """Called by the elected worker after it reads the payment table.
+
+    Zero-filled across every `PaymentState` for the same reason the queue depth
+    is: a `GROUP BY` returns only the states that currently have rows, so a
+    state that empties would keep its last non-zero value for ever. The
+    direction that matters here is the same one -- `submitting` draining to zero
+    must show as zero rather than as the last number anybody saw.
+    """
+    filled = {state.value: 0 for state in PaymentState}
+    filled.update({str(k): int(v) for k, v in count_by_state.items() if str(k) in filled})
+    _payments.publish(
+        PaymentSnapshot(
+            count_by_state=filled,
+            oldest_submitting_age_seconds=oldest_submitting_age_seconds,
+        )
+    )
+
+
+def _observe_payments(_options: CallbackOptions) -> Sequence[Observation]:
+    snapshot = _payments.current()
+    if snapshot is None:
+        return ()
+    return [
+        Observation(count, {"state": state}) for state, count in snapshot.count_by_state.items()
+    ]
+
+
+def _observe_oldest_submitting(_options: CallbackOptions) -> Sequence[Observation]:
+    snapshot = _payments.current()
+    if snapshot is None:
+        return ()
+    # Zero when nothing is in flight, rather than nothing at all, so that an
+    # absent series means "nobody is watching the money" and not "no payment is
+    # stuck". Those must not look the same.
+    return [Observation(snapshot.oldest_submitting_age_seconds or 0.0)]
 
 
 def _observe_depth(_options: CallbackOptions) -> Sequence[Observation]:
@@ -691,4 +767,16 @@ _meter.create_observable_gauge(
     callbacks=[_observe_dead_letters],
     unit="{job}",
     description="Dead letters nobody has replayed.",
+)
+_meter.create_observable_gauge(
+    PAYMENTS_IN_FLIGHT,
+    callbacks=[_observe_payments],
+    unit="{payment}",
+    description="Payments by state, as last seen by the elected worker.",
+)
+_meter.create_observable_gauge(
+    PAYMENT_OLDEST_SUBMITTING,
+    callbacks=[_observe_oldest_submitting],
+    unit="s",
+    description="How long the oldest payment has been awaiting an answer from the rail.",
 )

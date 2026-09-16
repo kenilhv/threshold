@@ -129,6 +129,38 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
         </p>
       </div>
 
+      {/* The money, if it has started moving. Above the agent's opinion
+          because it is a fact about this invoice rather than a suggestion
+          about it, and a reviewer scanning downward should meet the facts
+          first. */}
+      {match.payment && (
+        <div className="card">
+          <h3>Payment</h3>
+          <p>
+            <strong>
+              {match.payment.amount} {match.payment.currency}
+            </strong>
+            {" — "}
+            {match.payment.state === "submitting"
+              ? "instruction accounted for, awaiting the rail"
+              : match.payment.state}
+          </p>
+          {match.payment.failure_reason && (
+            <p className="meta">Refused: {match.payment.failure_reason}</p>
+          )}
+          {match.payment.rail_attempts > 1 && (
+            <p className="meta">
+              The rail was asked {match.payment.rail_attempts} times. Each retry sent the
+              same idempotency key, so the money moved at most once.
+            </p>
+          )}
+          <p className="meta">
+            {match.payment.rail_id}
+            {match.payment.rail_reference ? ` · ${match.payment.rail_reference}` : ""}
+          </p>
+        </div>
+      )}
+
       {/* Rendered after the evidence and visibly apart from it. The exceptions
           above are things the system established; this is something an agent
           said, and a reviewer must never have to guess which they are reading.

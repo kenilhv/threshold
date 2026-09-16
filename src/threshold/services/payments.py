@@ -339,6 +339,35 @@ class PaymentService:
         await session.flush()
         return row
 
+    async def in_flight(self, session: AsyncSession) -> tuple[dict[str, int], float | None]:
+        """Payments by state, and how long the oldest unanswered one has waited.
+
+        Read on the worker's event loop and cached, because the observable
+        gauges that publish it run their callbacks on the exporter's thread
+        where there is no loop to await a database on. The same arrangement the
+        queue depth uses, and for the same reason.
+
+        The age is measured from `submitted_at`, which is stamped when the row
+        enters `SUBMITTING` -- so it is the age of the *uncertainty*, not the age
+        of the payment. A payment authorised last week and submitted a minute
+        ago has waited a minute.
+        """
+        counts = {
+            str(state): int(total)
+            for state, total in (
+                await session.execute(select(Payment.state, func.count()).group_by(Payment.state))
+            ).all()
+        }
+        oldest = (
+            await session.execute(
+                select(func.min(Payment.submitted_at)).where(
+                    Payment.state == PaymentState.SUBMITTING.value
+                )
+            )
+        ).scalar_one_or_none()
+        age = None if oldest is None else (datetime.now(UTC) - oldest).total_seconds()
+        return counts, age
+
     async def trial_balance(self, session: AsyncSession) -> dict[Account, int]:
         """Every account's balance, summed in the database.
 

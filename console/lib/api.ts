@@ -52,6 +52,27 @@ export type EscalationView = {
   created_at: string;
 };
 
+/**
+ * Where the money is, if it has started moving.
+ *
+ * `submitting` is the state worth understanding: the instruction is accounted
+ * for and the rail has not answered. Not an error and not a success -- the
+ * window in which a payment system either has a truthful record or does not.
+ */
+export type PaymentView = {
+  payment_id: string;
+  state: string;
+  amount_minor: number;
+  amount: string;
+  currency: string;
+  rail_id: string;
+  rail_reference: string | null;
+  failure_reason: string | null;
+  rail_attempts: number;
+  created_at: string;
+  settled_at: string | null;
+};
+
 export type MatchView = {
   match_result_id: string;
   document_id: string;
@@ -69,6 +90,7 @@ export type MatchView = {
     status: string;
   } | null;
   escalation: EscalationView | null;
+  payment: PaymentView | null;
 };
 
 export type DecisionView = {

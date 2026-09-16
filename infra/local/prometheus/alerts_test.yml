@@ -37,6 +37,77 @@ tests:
               description: "Queue depth has not been published for five minutes. One worker publishes it, elected by the reaper's advisory lock, so this means the pool has no live member or the elected one is wedged. Nothing is draining the queue and no other queue alert can fire while this is true."
               runbook_url: "docs/runbooks/telemetry-blind.md"
 
+  # --------------------------------------------------------------- payments
+  - name: a payment has been awaiting the rail for too long
+    interval: 1m
+    input_series:
+      - series: 'threshold_payment_oldest_submitting_age_seconds'
+        values: "60+60x30"
+      - series: 'threshold_payment_in_flight{state="submitting"}'
+        values: "1+0x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PaymentStuckInFlight
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: payments
+            exp_annotations:
+              summary: "A payment has been in flight for over fifteen minutes"
+              description: "A payment has been awaiting an answer from the rail for over fifteen minutes. It is neither paid nor failed, and it must not be retried by hand: the executor is already resubmitting with the same idempotency key, which is what stops the supplier being paid twice."
+              runbook_url: "docs/runbooks/payment-stuck.md"
+
+  - name: a payment in flight for a normal length of time does not page
+    interval: 1m
+    input_series:
+      # Fourteen minutes and climbing. Deliberately just under the threshold:
+      # the executor's backoff is capped at ten minutes, so a payment that has
+      # not had its second attempt yet looks exactly like this.
+      - series: 'threshold_payment_oldest_submitting_age_seconds'
+        values: "60+60x13"
+      - series: 'threshold_payment_in_flight{state="submitting"}'
+        values: "1+0x13"
+    alert_rule_test:
+      - eval_time: 13m
+        alertname: PaymentStuckInFlight
+        exp_alerts: []
+
+  - name: an idle payment system does not page
+    interval: 1m
+    input_series:
+      # Zero, not absent. The gauge reports zero when nothing is in flight so
+      # that quiet cannot look like a stuck payment -- or like a dead observer.
+      - series: 'threshold_payment_oldest_submitting_age_seconds'
+        values: "0+0x30"
+      - series: 'threshold_payment_in_flight{state="settled"}'
+        values: "12+0x30"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PaymentStuckInFlight
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: PaymentObserverStopped
+        exp_alerts: []
+
+  - name: the payment observer stops publishing
+    interval: 1m
+    input_series:
+      # Something else is reporting, so this proves absent() noticed THIS
+      # series rather than an empty backend.
+      - series: 'threshold_job_dead_letters'
+        values: "0+0x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PaymentObserverStopped
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: payments
+            exp_annotations:
+              summary: "No worker is reporting payments in flight"
+              description: "Payment counts have not been published for five minutes. One worker publishes them, elected by the reaper's advisory lock. Money may be moving and nothing is watching it."
+              runbook_url: "docs/runbooks/payment-stuck.md"
+
   - name: the queue observer is publishing, even when the queue is empty
     interval: 1m
     input_series:

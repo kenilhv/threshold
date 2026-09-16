@@ -31,12 +31,14 @@ from threshold.api import idempotency
 from threshold.api.dependencies import SessionDep, get_ingest_service
 from threshold.domain.classification import Sensitivity
 from threshold.domain.extraction import redacted_fields
+from threshold.domain.ledger import to_major
 from threshold.domain.models import (
     Document,
     Escalation,
     Extraction,
     MatchException,
     MatchResult,
+    Payment,
     PurchaseOrder,
     Vendor,
 )
@@ -121,6 +123,35 @@ class VendorView(BaseModel):
     status: str
 
 
+class PaymentView(BaseModel):
+    """Where the money is, if it has started moving.
+
+    ``state`` is the one field a reviewer actually reads, and `submitting` is the
+    one worth understanding: it means the instruction has been accounted for and
+    the rail has not answered yet. That is not an error and not a success -- it
+    is the window in which a payment system either has a truthful record or does
+    not.
+
+    ``amount`` is rendered in major units for display and ``amount_minor`` is the
+    stored integer. Both are sent because a client that did its own division
+    would be a second place the rounding lives.
+    """
+
+    payment_id: str
+    state: str
+    amount_minor: int
+    amount: str
+    currency: str
+    rail_id: str
+    rail_reference: str | None = None
+    failure_reason: str | None = None
+    #: How many times the rail has been asked. Above one means an outage was
+    #: survived, which is worth seeing on the screen rather than in a log.
+    rail_attempts: int
+    created_at: str
+    settled_at: str | None = None
+
+
 class EscalationView(BaseModel):
     """What the triage agent said, marked as an opinion rather than a finding.
 
@@ -172,6 +203,9 @@ class MatchView(BaseModel):
     #: None when the invoice's vendor did not resolve, which is itself an
     #: exception on the list above.
     vendor: VendorView | None = None
+    #: None until an approval releases the money. A blocked invoice has no
+    #: payment and that is the system working, not a missing field.
+    payment: PaymentView | None = None
     #: None when no agent ran, or when it had nothing to add -- which is the
     #: common case, because the deterministic tier only speaks when more than
     #: one desk is involved. Its absence is not a degraded answer: the
@@ -392,6 +426,25 @@ async def get_match(
             created_at=escalation.created_at.isoformat(),
         )
 
+    payment = (
+        await session.execute(select(Payment).where(Payment.match_result_id == result.id))
+    ).scalar_one_or_none()
+    payment_view: PaymentView | None = None
+    if payment is not None:
+        payment_view = PaymentView(
+            payment_id=str(payment.id),
+            state=payment.state,
+            amount_minor=payment.amount_minor,
+            amount=str(to_major(payment.amount_minor, payment.currency)),
+            currency=payment.currency,
+            rail_id=payment.rail_id,
+            rail_reference=payment.rail_reference,
+            failure_reason=payment.failure_reason,
+            rail_attempts=payment.rail_attempts,
+            created_at=payment.created_at.isoformat(),
+            settled_at=payment.settled_at.isoformat() if payment.settled_at else None,
+        )
+
     return MatchView(
         match_result_id=str(result.id),
         document_id=str(result.document_id),
@@ -403,6 +456,7 @@ async def get_match(
         skipped_checks=list(result.skipped_checks),
         vendor=vendor_view,
         escalation=escalation_view,
+        payment=payment_view,
         exceptions=[
             ExceptionView(
                 code=item.code,

@@ -34,15 +34,17 @@ Operator console (Next.js, BFF) ── the owner approves / rejects / holds
 Payment executor — idempotency key, double-entry ledger, sandbox rail
 ```
 
-Built today: everything down to and including the console. A PDF ingests, a
-worker extracts it, a second job matches it against its purchase order and the
-goods received, and either the system records its own approval or the invoice
-waits in a queue for the person who owns what went wrong. An invoice that failed
-gets a third job, which asks the triage agent which desk should look first.
+Built today: all of it, end to end. A PDF ingests, a worker extracts it, a
+second job matches it against its purchase order and the goods received, and
+either the system records its own approval or the invoice waits in a queue for
+the person who owns what went wrong. An invoice that failed gets a third job,
+which asks the triage agent which desk should look first. An invoice that was
+approved gets a fourth, which pays it and writes the ledger entries saying where
+the money went.
 
 Both agentic steps run their deterministic tier. Neither model tier exists yet,
 and both boundaries do — which is the order this project builds in, argued in
-D-029. The payment executor is M8.
+D-029.
 
 The diagram used to say "state machine" for the approval step. There is no
 state machine, and that is a decision rather than an omission: the current state
@@ -425,6 +427,13 @@ guarantee the money path exists to provide.
 
 **No separate vector database.** pgvector in the same Postgres: same
 transaction, same backup, same restore drill.
+
+**No `paid` boolean.** A double-entry ledger, because it makes one class of bug
+arithmetically impossible rather than merely discouraged: you cannot record a
+payment without recording where the money came from, since the postings will not
+sum to zero and `ck_ledger_entry_balanced` refuses them at `COMMIT`. The domain
+checks the same rule independently — one protects the path through the service
+and gives a readable error, the other protects the table from everything else.
 
 **No event sourcing or CQRS.** The append-only audit table provides the
 auditability that motivates event sourcing, without the read-model rebuild

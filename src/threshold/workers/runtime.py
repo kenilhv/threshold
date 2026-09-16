@@ -48,10 +48,12 @@ from threshold.adapters.queue import (
 from threshold.domain.jobs import PermanentJobError, TransientJobError
 from threshold.observability.metrics import (
     JobOutcome,
+    publish_payment_snapshot,
     publish_queue_snapshot,
     record_job_execution,
     record_queue_wait,
 )
+from threshold.services.payments import PaymentService
 from threshold.workers.handlers import HANDLERS
 
 log = structlog.get_logger(__name__)
@@ -315,6 +317,16 @@ class WorkerRuntime:
             depth_by_state=stats,
             oldest_pending_age_seconds=await self._queue.oldest_claimable_age(session),
             dead_letters_unreplayed=stats.get("dead_letters_unreplayed", 0),
+        )
+
+        # The money, read by the same elected worker on the same cadence. One
+        # election rather than two, for the reason the queue's docstring gives:
+        # two mechanisms for "who speaks for the system" can disagree, and then
+        # `sum()` reports N times the truth.
+        counts, oldest_submitting = await PaymentService().in_flight(session)
+        publish_payment_snapshot(
+            count_by_state=counts,
+            oldest_submitting_age_seconds=oldest_submitting,
         )
 
     async def _reap_loop(self) -> None:

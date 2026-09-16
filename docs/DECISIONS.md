@@ -38,9 +38,50 @@ insert.
 Verified against Postgres 16 before the migration was written, not after: a
 balanced multi-row insert commits; an unbalanced one raises at `COMMIT`; a
 `DELETE` and an `UPDATE` that unbalance a settled transaction each raise at
-`COMMIT`. `tests/integration/test_ledger.py` re-runs all four through
-SQLAlchemy so the failure arrives as an `IntegrityError` where the application
-would see it.
+`COMMIT`.
+
+**Amended the same day.** That verification was real and incomplete, and the gap
+is worth keeping rather than editing out, because it is the shape these mistakes
+have: four cases were tested, all four passed, and the fifth was not thought of.
+
+0007 resolved the transaction to check as
+`COALESCE(NEW.transaction_id, OLD.transaction_id)`. That is correct on INSERT,
+where `OLD` is null, and on DELETE, where `NEW` is. On UPDATE both are populated,
+`COALESCE` returns `NEW`, and the row's *previous* transaction is never looked
+at. An UPDATE that moves a posting between transactions unbalances both, and only
+one of them is checked.
+
+The destination check hides this most of the time — a balanced transaction that
+gains a non-zero entry becomes unbalanced, so the move is caught anyway. What
+gets through is a transaction built unbalanced inside the same statement and then
+balanced by taking a row from a settled one: the destination ends at zero, the
+source does not, and nothing looks at the source. Reproduced against this
+database: the `COMMIT` succeeded and left a committed transaction summing to 700.
+
+0008 replaces the function body to check the distinct set of transactions the row
+touched, which on an UPDATE is two, and uses `TG_OP` rather than inferring the
+operation from which of `NEW` and `OLD` is populated — that inference is what
+caused this. The trigger itself stays attached throughout, so there is no window
+in which the table is unguarded.
+
+`tests/integration/test_payments.py` now runs all five cases through SQLAlchemy,
+so each failure arrives as an `IntegrityError` where the application would see
+it. The fifth is the one that would have shipped.
+
+**The cost, measured rather than assumed.** A per-row constraint trigger adds
+0.285 ms to a four-posting transaction (pgbench, four clients, twenty seconds:
+2762 tps to 2308). The cost is quadratic in postings per ledger transaction —
+2000 postings in one transaction costs 334 ms — because each invocation
+re-aggregates the whole set. Every transaction this system writes has two
+postings, so the real figure is the first one. A batch settlement run that
+grouped thousands of postings into one ledger transaction would need to know
+this; nothing here does that, and the number is recorded so the day somebody
+proposes it, the answer is arithmetic rather than a guess.
+
+Constraint triggers are `AFTER` and `FOR EACH ROW` only — `FOR EACH STATEMENT`
+and `REFERENCING ... TABLE` are both syntax errors on a `CREATE CONSTRAINT
+TRIGGER`, so the per-row cost is not avoidable by rewriting it as a
+statement-level check. Checked, not assumed.
 
 `domain/ledger.py` validates the same rule independently. That is not
 redundancy: the domain rule protects the path through the service and gives a
