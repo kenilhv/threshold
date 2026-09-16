@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import Final
 
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from threshold.adapters.queue import PostgresJobQueue
 from threshold.domain.approval import (
     TERMINAL,
     Authorisation,
@@ -37,6 +39,7 @@ from threshold.domain.approval import (
     authorise,
     requires_reason,
 )
+from threshold.domain.jobs import JobKind
 from threshold.domain.models import ApprovalDecision, MatchException, MatchResult
 from threshold.domain.roles import Role
 from threshold.domain.taxonomy import ExceptionCode, OwnerRole, Severity
@@ -92,6 +95,37 @@ class DecisionRequest:
     reason: str | None
 
 
+#: The decisions that release money. `held` and `rejected` do not, and
+#: `auto_approved` does -- which is the point of it being in the same table:
+#: "paid without a person looking" is a WHERE clause rather than a separate path
+#: through this service.
+PAYING: Final[frozenset[Decision]] = frozenset({Decision.AUTO_APPROVED, Decision.APPROVED})
+
+
+async def _request_payment(session: AsyncSession, decision: ApprovalDecision) -> None:
+    """Ask for this authorisation to be executed, in its own transaction.
+
+    Enqueued here rather than called here, and in the same transaction as the
+    decision, for the reason every other chain in this system is: if the
+    approval rolls back, so does the request to act on it. A payment executed
+    inline would mean money moving before the authorisation that permitted it
+    was durable.
+
+    The dedupe key is the decision, which is also what the payment row is unique
+    on and what the rail's idempotency key is derived from. Three layers saying
+    the same thing in three places, which is what lets them catch each other
+    failing rather than all failing together.
+    """
+    if Decision(decision.decision) not in PAYING:
+        return
+    await PostgresJobQueue().enqueue(
+        session,
+        kind=JobKind.EXECUTE_PAYMENT,
+        payload={"approval_decision_id": str(decision.id)},
+        dedupe_key=f"pay:{decision.id}",
+    )
+
+
 class ApprovalService:
     async def record_auto_approval(
         self, session: AsyncSession, result: MatchResult
@@ -119,6 +153,7 @@ class ApprovalService:
             },
         )
         record_approval_decision(decision=Decision.AUTO_APPROVED.value, actor_type="system")
+        await _request_payment(session, decision)
         return decision
 
     async def decide(
@@ -227,6 +262,7 @@ class ApprovalService:
         # recorded" -- a 403 or a 409 is a fact about a request, which the HTTP
         # metrics already carry, not a decision about an invoice.
         record_approval_decision(decision=request.decision.value, actor_type="human")
+        await _request_payment(session, decision)
         return decision
 
     async def open_exceptions(

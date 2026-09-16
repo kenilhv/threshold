@@ -44,6 +44,11 @@ class JobKind(StrEnum):
     #: or not the advice arrives. Chaining it inline would let a model tier
     #: being slow, down, or captured hold up the decision that blocks a payment.
     TRIAGE_INVOICE = "triage_invoice"
+    #: Runs after an approval and advances one payment by one state. Its own job
+    #: rather than a loop inside one, because the row has to be committed as
+    #: `submitting` before the rail is called -- and a handler owns exactly one
+    #: transaction, so the commit between the two is the queue's to provide.
+    EXECUTE_PAYMENT = "execute_payment"
 
 
 #: How long a claim is good for. A worker must finish or heartbeat within this,

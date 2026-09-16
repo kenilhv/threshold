@@ -21,6 +21,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from threshold.domain.extraction import ExtractedInvoice
+from threshold.domain.ledger import LedgerError, exponent_for, to_minor
 from threshold.domain.matching import (
     BankComparison,
     Disposition,
@@ -64,6 +65,39 @@ log = structlog.get_logger(__name__)
 _BANK_READ_FLOOR: Final = Decimal("0.50")
 
 
+def _payable(facts: InvoiceFacts) -> tuple[int | None, str | None, int | None]:
+    """What this invoice would be paid, in minor units, or nothing at all.
+
+    Returns a triple rather than raising, because a total that could not be read
+    is an ordinary outcome -- it is the invoice that raised
+    `LOW_CONFIDENCE_FIELD` or `ARITHMETIC_MISMATCH`, and the decision row for it
+    must still exist. `ck_match_result_amount_is_whole` allows zero of the three
+    or all three, so the absence is recorded as an absence rather than as a zero.
+
+    `facts.total` is already `or ZERO` by the time it reaches here, which
+    is right for the matcher -- a zero trips the arithmetic check loudly -- and
+    exactly wrong for a ledger. So zero is treated as unreadable: an invoice for
+    nothing is not a thing to pay.
+
+    An unknown currency is the same answer. `exponent_for` refuses rather than
+    guessing at two, and a decision that cannot say what its number means is a
+    decision with no number.
+    """
+    if facts.total <= ZERO or not facts.currency:
+        return (None, None, None)
+    try:
+        return (
+            to_minor(facts.total, facts.currency),
+            facts.currency,
+            exponent_for(facts.currency),
+        )
+    except LedgerError:
+        # A currency this system has no exponent for. The match still stands --
+        # `CURRENCY_MISMATCH` is likely already on it -- and the amount does not.
+        log.info("match.amount_not_recorded", currency=facts.currency)
+        return (None, None, None)
+
+
 class MatchingError(RuntimeError):
     """The match could not be attempted at all.
 
@@ -100,7 +134,7 @@ class MatchingService:
         order = await self._purchase_order_facts(session, facts.po_number)
         outcome = three_way_match(facts, order, policy=self._policy)
 
-        return await self._persist(session, document, extraction, order, outcome)
+        return await self._persist(session, document, extraction, facts, order, outcome)
 
     # ------------------------------------------------------------ reading ---
 
@@ -352,6 +386,7 @@ class MatchingService:
         session: AsyncSession,
         document: Document,
         extraction: Extraction,
+        facts: InvoiceFacts,
         order: PurchaseOrderFacts | None,
         outcome: MatchOutcome,
     ) -> MatchResult:
@@ -371,6 +406,8 @@ class MatchingService:
                 )
             ).scalar_one_or_none()
 
+        amount_minor, currency, exponent = _payable(facts)
+
         result = MatchResult(
             document_id=document.id,
             extraction_id=extraction.id,
@@ -378,6 +415,9 @@ class MatchingService:
             version=next_version,
             disposition=outcome.disposition.value,
             policy_version=outcome.policy_version,
+            amount_minor=amount_minor,
+            currency=currency,
+            currency_exponent=exponent,
             line_pairs=[
                 {"invoice_line": invoice_line, "po_line": po_line}
                 for invoice_line, po_line in outcome.line_pairs

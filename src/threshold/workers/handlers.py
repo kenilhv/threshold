@@ -33,6 +33,7 @@ from threshold.domain.jobs import JobKind, PermanentJobError, TransientJobError
 from threshold.domain.matching import Disposition
 from threshold.domain.models import Document
 from threshold.services.matching import MatchingError
+from threshold.services.payments import PaymentRefusedError, PaymentService
 from threshold.services.triage import TriageService
 
 log = structlog.get_logger(__name__)
@@ -157,6 +158,48 @@ async def triage_invoice(session: AsyncSession, payload: dict[str, Any]) -> None
     )
 
 
+async def execute_payment(session: AsyncSession, payload: dict[str, Any]) -> None:
+    """Advance one payment by one state, then ask to be run again if more remains.
+
+    One transition per run is not a simplification -- it is the mechanism. The
+    payment has to be committed as `submitting` before the rail is called, and a
+    handler owns exactly one transaction, so the commit between those two things
+    is the queue's to provide. `services/payments.py` argues it at length.
+
+    The re-enqueue goes in the same transaction as the transition, so a run that
+    rolls back also un-asks for its successor. That is the same property the
+    extraction handler relies on when it enqueues the match.
+    """
+    approval_decision_id = _uuid_from(payload, "approval_decision_id")
+
+    try:
+        payment, more = await PaymentService().advance(session, approval_decision_id)
+    except PaymentRefusedError as refusal:
+        # A missing fact: no amount was read, no payment details are on file.
+        # Re-reading the same rows produces the same absence, so this goes to a
+        # person rather than round the retry loop three times first.
+        raise PermanentJobError(str(refusal)) from refusal
+
+    if more:
+        await PostgresJobQueue().enqueue(
+            session,
+            kind=JobKind.EXECUTE_PAYMENT,
+            payload={"approval_decision_id": str(approval_decision_id)},
+            # The state is in the key because the next run is a different piece
+            # of work. Without it the key would collide with the job currently
+            # running and the payment would stall one step from the end.
+            dedupe_key=f"pay:{payment.id}:{payment.state}",
+        )
+
+    log.info(
+        "handler.payment_advanced",
+        payment_id=str(payment.id),
+        state=payment.state,
+        more=more,
+        rail_attempts=payment.rail_attempts,
+    )
+
+
 def _document_id_from(payload: dict[str, Any]) -> uuid.UUID:
     return _uuid_from(payload, "document_id")
 
@@ -175,4 +218,5 @@ HANDLERS: Final[dict[str, Handler]] = {
     JobKind.EXTRACT_DOCUMENT.value: extract_document,
     JobKind.MATCH_INVOICE.value: match_invoice,
     JobKind.TRIAGE_INVOICE.value: triage_invoice,
+    JobKind.EXECUTE_PAYMENT.value: execute_payment,
 }
