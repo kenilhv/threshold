@@ -85,6 +85,12 @@ REACHABLE_TEXT_COLUMNS: Final = frozenset(
     {
         "MatchResult.disposition",
         "MatchResult.policy_version",
+        # Read off the supplier's document, and therefore supplier-influenced --
+        # but `ck_match_result_currency_code` restricts it to three uppercase
+        # letters, so it is not a channel an instruction fits through. That is a
+        # constraint rather than a judgement about length, which is why it is not
+        # in SUPPLIER_CONTROLLED below.
+        "MatchResult.currency",
         "MatchResult.line_pairs",
         "MatchResult.skipped_checks",
         "MatchException.code",

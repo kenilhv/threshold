@@ -5,6 +5,152 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-033 — The ledger balances because Postgres refuses it otherwise
+
+**Date:** 2026-09-16 · **Status:** accepted
+
+Double-entry is not chosen here for tradition. It makes one class of bug
+arithmetically impossible: you cannot record a payment without recording where
+the money came from, because the postings will not sum to zero.
+
+That is only true if something enforces the sum. In most systems that something
+is a service method everybody is supposed to call, which is a convention rather
+than a guarantee — the first `INSERT` written by hand during an incident is the
+one that breaks it.
+
+### The trigger, and why it has to be deferred
+
+`ck_ledger_entry_balanced` is a `DEFERRABLE INITIALLY DEFERRED` constraint
+trigger. It runs at `COMMIT`, sums the entries of each affected transaction, and
+raises `check_violation` if the total is non-zero.
+
+Deferred is not an optimisation. Entries arrive one `INSERT` at a time, so the
+set is *unbalanced between them* — a per-statement check would make correct code
+impossible to write and would be worked around within a week.
+
+It fires on `UPDATE` and `DELETE` as well as `INSERT`, and that is the half most
+implementations miss. Adding a bad entry is the obvious attack on a ledger;
+removing a good one from a transaction that already balanced is the quiet one.
+`COALESCE(NEW.transaction_id, OLD.transaction_id)` is what lets one function
+serve all three, because `NEW` is null on a delete and `OLD` is null on an
+insert.
+
+Verified against Postgres 16 before the migration was written, not after: a
+balanced multi-row insert commits; an unbalanced one raises at `COMMIT`; a
+`DELETE` and an `UPDATE` that unbalance a settled transaction each raise at
+`COMMIT`. `tests/integration/test_ledger.py` re-runs all four through
+SQLAlchemy so the failure arrives as an `IntegrityError` where the application
+would see it.
+
+`domain/ledger.py` validates the same rule independently. That is not
+redundancy: the domain rule protects the path through the service and gives a
+readable error at the point of the mistake, and the trigger protects the table
+from everything else. Neither is sufficient and each catches the other failing.
+
+### Integer minor units, and one conversion site
+
+Amounts are signed `BIGINT` minor units. `Decimal` is right for tolerance
+arithmetic — "how far apart are these two numbers" — and wrong for a ledger,
+where the question is "do these cancel exactly". `BIGINT` rather than `INTEGER`
+because cents overflow an `INTEGER` at about 21 million, which is not a large
+invoice.
+
+The conversion is `ledger.to_minor`, and it is the only one. It rounds
+`ROUND_HALF_UP`, stated explicitly, because every `.quantize(SCALE)` elsewhere
+in `src/` omits `rounding=` and inherits `ROUND_HALF_EVEN` from the ambient
+context while the renderers use `ROUND_HALF_UP`. Half-even distributes error
+better across many roundings, which is what a statistic wants; a supplier who
+invoiced 10.005 and was paid 10.00 asks why, and "it rounds to even" is not an
+answer about their money. In practice nothing should round at all, so this is
+about which way a bug goes.
+
+`MINOR_UNITS` lists only currencies this system has seen, and an unknown one is
+a refusal rather than a guess at two — a default of two turns 1000 JPY into 10
+JPY silently. There is a second exponent table in this repository,
+`_ZERO_DECIMAL` in `seeds/layouts/multipage_credit.py`, and it is deliberately
+not reused: its own comment says it drives formatting only, and it is right to,
+because it lists HUF, which is printed without decimals and is formally a
+two-decimal currency under ISO 4217. Reusing it to save five lines would have
+introduced a real rounding error on Hungarian invoices.
+
+Every stored amount carries the exponent it was written with, for the reason
+`policy_version` is stored on `match_result` and `owner_role` on
+`match_exception`: the table is a present-tense fact, and reading a historical
+row through a corrected entry in it would move the decimal point.
+
+### The gap this found
+
+`match_result` and `approval_decision` between them carried **no monetary
+column**. This schema could say an invoice was blocked and could not say for how
+much; "how much is held up right now" was unanswerable without parsing a JSON
+blob inside `extraction.fields`. That was not a deliberate omission, it was one
+nobody had had a reason to notice, and a ledger has no way to proceed without
+noticing it.
+
+`match_result` now carries `amount_minor`, `currency` and `currency_exponent`,
+nullable as a set — `ck_match_result_amount_is_whole` allows zero or three, never
+one or two. Nullable because a match result whose total could not be read must
+still exist; that is precisely the invoice that raised exceptions. The refusal to
+pay against a null lives on the payment, which is where it belongs.
+
+The currency comes from the page rather than from the purchase order.
+`CURRENCY_MISMATCH` exists because those two can disagree, and what a supplier
+billed is denominated in what they printed.
+
+---
+
+## D-032 — The payment executor is not a separate Go service
+
+**Date:** 2026-09-16 · **Status:** accepted · **Reverses an M0 decision**
+
+`ARCHITECTURE.md` said from M0 that there would be two deployable units, and
+argued for a Go payment executor on the grounds that "the money path wants
+transactional integrity, cheap concurrency and a small auditable surface, and it
+is the one place a second language pays for itself".
+
+Building the money path showed the argument to be backwards on its own strongest
+point.
+
+**Transactional integrity is the reason not to split.** It comes from Postgres,
+and a process boundary between the approval and the payment is precisely what
+takes it away. Two services cannot share a transaction. The payment row, the
+ledger entries and the job that produced them commit together or not at all —
+which is what makes a failed payment leave nothing behind and its retry collide
+with nothing. Recovering that across a service boundary needs a distributed
+protocol to get back what one `COMMIT` already gives, and every such protocol is
+a new way to pay somebody twice.
+
+**The auditable surface is a module boundary.** `domain/ledger.py` is 300 lines
+with no database, no clock and no I/O. Putting it behind a network hop would not
+make it smaller; it would make it harder to test and impossible to type-check
+against its callers.
+
+**The concurrency is a queue table.** `FOR UPDATE SKIP LOCKED` with leases and a
+reaper, which this system has had since M3 and which the payment path reuses
+unchanged. Payment volume in accounts payable is not a concurrency problem; it
+is a correctness problem wearing a concurrency costume.
+
+What a second language would actually have bought: a second toolchain, a second
+test runner, a second CI lane, a second dependency graph, and a second place to
+express the balance invariant — where the two expressions could disagree.
+
+The honest summary is that the Go split was an architectural aspiration written
+before the thing it described existed, and the act of building it is what made
+the trade visible. It is recorded here rather than edited out of the
+architecture document, because a reader deserves to know which claims survived
+contact and which did not.
+
+**What is genuinely lost.** A demonstration of a second language, which is a
+real thing to want in a portfolio and not a reason to make a system worse. And
+the blast-radius argument has some merit: a payment executor that cannot be
+deployed independently cannot be rolled back independently either. That is
+mitigated here by the payment path being a separate job kind with its own
+handler and its own dead-letter queue, so it can be stopped without stopping
+ingestion — but it is mitigation rather than isolation, and the difference is
+worth naming.
+
+---
+
 ## D-031 — The agent is not the router, and that is what bounds an injection
 
 **Date:** 2026-09-16 · **Status:** accepted

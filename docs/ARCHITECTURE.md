@@ -31,7 +31,7 @@ Decisions — append-only, machine and human in one table, one terminal row
    ▼
 Operator console (Next.js, BFF) ── the owner approves / rejects / holds
    ▼
-Payment executor (Go) — idempotency key, double-entry ledger, Stripe sandbox
+Payment executor — idempotency key, double-entry ledger, sandbox rail
 ```
 
 Built today: everything down to and including the console. A PDF ingests, a
@@ -403,11 +403,25 @@ state change. Anything broker-backed can only satisfy that shape by giving up
 the single commit and accepting a real duplicate window — which is a trade to
 make deliberately, not to discover after the interface has made it look free.
 
-**No microservices.** Two deployable units: the Python plane and the Go payment
-executor. That split has a real reason — the money path wants transactional
-integrity, cheap concurrency and a small auditable surface, and it is the one
-place a second language pays for itself. Any further split would be a boundary
-invented to look distributed.
+**No microservices.** One deployable unit.
+
+This section used to say two, and argued for a Go payment executor on the
+grounds that "the money path wants transactional integrity, cheap concurrency
+and a small auditable surface". Building the money path is what showed that
+argument to be backwards, and D-032 records the reversal rather than editing the
+claim away.
+
+The short version: transactional integrity on this path comes from Postgres, and
+a process boundary between the approval and the payment is the one thing that
+takes it away. Two services cannot share a transaction, so the payment row and
+the job that creates it would need a distributed protocol to recover what a
+single COMMIT already gives. The auditable surface is a module boundary, not a
+process boundary. The concurrency this path needs is a queue table with
+`FOR UPDATE SKIP LOCKED`, which already exists.
+
+A second language would have bought a second toolchain, a second test runner and
+a second place to express the ledger invariant. It would have cost the one
+guarantee the money path exists to provide.
 
 **No separate vector database.** pgvector in the same Postgres: same
 transaction, same backup, same restore drill.

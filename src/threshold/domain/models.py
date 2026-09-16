@@ -25,6 +25,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -863,6 +864,35 @@ class MatchResult(Base):
         String(40), nullable=False, info=classify(Sensitivity.PUBLIC)
     )
 
+    #: What this decision is about, in integer minor units.
+    #:
+    #: Added at M8, and its absence until then was a real gap rather than an
+    #: oversight worth shrugging at: this schema could say an invoice was
+    #: blocked and could not say for how much. "How much is held up right now"
+    #: is the first question an AP manager asks and it was unanswerable without
+    #: parsing a JSON blob.
+    #:
+    #: Nullable, because a match result whose total could not be read must still
+    #: exist -- that is precisely the invoice that raised exceptions. A payment
+    #: refuses to be created against a null, which is the correct place for that
+    #: refusal to live.
+    #:
+    #: The exponent is stored alongside for the reason `policy_version` is:
+    #: `ledger.MINOR_UNITS` is a present-tense table, and reading a historical
+    #: row through a corrected entry in it would move the decimal point.
+    amount_minor: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+    #: From the page, not from the purchase order. `CURRENCY_MISMATCH` exists
+    #: precisely because those two can disagree, and the amount a supplier
+    #: billed is denominated in what they printed.
+    currency: Mapped[str | None] = mapped_column(
+        String(3), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+    currency_exponent: Mapped[int | None] = mapped_column(
+        SmallInteger, nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+
     #: Which invoice line the matcher believed each purchase-order line to be.
     #: Stored so a wrong pairing is visible directly rather than inferred from
     #: the exceptions it caused.
@@ -904,6 +934,26 @@ class MatchResult(Base):
             name="ck_match_result_disposition",
         ),
         CheckConstraint("version > 0", name="ck_match_result_version_positive"),
+        # The three money columns arrive together or not at all. A currency with
+        # no amount, or an amount with no currency, is a number nobody can spend
+        # and the sort of half-written row a nullable column invites.
+        CheckConstraint(
+            "num_nonnulls(amount_minor, currency, currency_exponent) IN (0, 3)",
+            name="ck_match_result_amount_is_whole",
+        ),
+        CheckConstraint(
+            "amount_minor IS NULL OR amount_minor >= 0",
+            name="ck_match_result_amount_not_negative",
+        ),
+        # Three uppercase letters, enforced rather than assumed. This column is
+        # read off a document the supplier controls and is one of the few
+        # supplier-influenced strings the triage agent can see, so the question
+        # "could an instruction be written into it" needs a structural answer
+        # rather than an argument about how short three characters is.
+        CheckConstraint(
+            "currency IS NULL OR currency ~ '^[A-Z]{3}$'",
+            name="ck_match_result_currency_code",
+        ),
         Index("ix_match_result_document", "document_id", "version"),
     )
 
@@ -1187,4 +1237,258 @@ class Escalation(Base):
         # an agent that ran twice and a reviewer with two opinions to reconcile.
         Index("uq_escalation_match_result", "match_result_id", unique=True),
         Index("ix_escalation_owner", "owner_role", "created_at"),
+    )
+
+
+class LedgerTransaction(Base):
+    """One balanced movement of money. Its entries are the two or more sides.
+
+    A transaction exists so that the postings have something to sum to zero
+    *within*. The balance rule is enforced by `ck_ledger_entry_balanced`, a
+    deferred constraint trigger that runs at COMMIT rather than per statement --
+    because the rows arrive one INSERT at a time and the set is unbalanced
+    between them, which is normal and must not be an error.
+
+    Both `payment_id` and `match_result_id` are nullable and at most one is set
+    on any row. An accrual belongs to a decision, a payment movement belongs to
+    a payment, and the opening balance belongs to neither.
+    """
+
+    __tablename__ = "ledger_transaction"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    kind: Mapped[str] = mapped_column(String(30), nullable=False, info=classify(Sensitivity.PUBLIC))
+
+    #: ISO 4217, and the exponent that was in force when this was written. The
+    #: exponent is stored rather than looked up for the reason `policy_version`
+    #: is stored on `match_result`: a table is a present-tense fact, and
+    #: re-deriving a historical row from it moves every decimal point in it.
+    currency: Mapped[str] = mapped_column(
+        String(3), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    currency_exponent: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("payment.id", ondelete="RESTRICT"),
+        nullable=True,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    match_result_id: Mapped[uuid.UUID | None] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("match_result.id", ondelete="RESTRICT"),
+        nullable=True,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    entries: Mapped[list[LedgerEntry]] = relationship(
+        back_populates="transaction", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "num_nonnulls(payment_id, match_result_id) <= 1",
+            name="ck_ledger_transaction_one_subject",
+        ),
+        CheckConstraint("currency_exponent >= 0", name="ck_ledger_transaction_exponent"),
+        Index("ix_ledger_transaction_payment", "payment_id"),
+        Index("ix_ledger_transaction_match_result", "match_result_id"),
+        Index("ix_ledger_transaction_kind", "kind", "created_at"),
+    )
+
+
+class LedgerEntry(Base):
+    """One side of a movement. Debit positive, credit negative.
+
+    Append-only in practice and enforced as such in intent: a mistake is
+    corrected by a reversing transaction, never by an UPDATE. The trigger covers
+    UPDATE and DELETE as well as INSERT, so an attempt to rewrite history still
+    has to leave the books balanced -- which is much harder to do quietly than
+    deleting a row.
+    """
+
+    __tablename__ = "ledger_entry"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    transaction_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("ledger_transaction.id", ondelete="CASCADE"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    account: Mapped[str] = mapped_column(
+        String(30), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    #: Integer minor units, signed. BIGINT because cents overflow an INTEGER at
+    #: about 21 million in a two-decimal currency, which is not a large invoice.
+    amount_minor: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    transaction: Mapped[LedgerTransaction] = relationship(back_populates="entries")
+
+    __table_args__ = (
+        CheckConstraint("amount_minor <> 0", name="ck_ledger_entry_moves_something"),
+        # An account appears once per transaction, so the ledger reads as what
+        # happened rather than as how the code built it.
+        Index("uq_ledger_entry_account", "transaction_id", "account", unique=True),
+        Index("ix_ledger_entry_account", "account"),
+    )
+
+
+class Payment(Base):
+    """One attempt to pay one authorised invoice, and its whole history of state.
+
+    ``approval_decision_id`` is unique, and that is the third idempotency layer
+    the `Job` docstring has promised since M0. The approval decision is the right
+    root because it is the only row in this schema that means "this may be paid":
+    it is append-only, it is attached to a body of evidence rather than to a
+    document, and it is stable under re-matching.
+
+    The other two candidates are wrong in instructive ways. ``match_result_id``
+    identifies evidence rather than authorisation, and one match result can
+    legitimately carry both a system ``auto_approved`` row and a later human
+    ``approved`` one -- so keying on it would silently collapse two
+    authorisations into one payment. ``document_id`` is both too strict, because
+    re-matching after a correction is a designed operation, and too loose,
+    because the duplicate this system exists to catch is one invoice arriving as
+    two documents with two ids.
+
+    ``idempotency_key`` is what the rail is told, and it is derived from the same
+    approval decision. So the key and the constraint say the same thing in two
+    places, which is what lets them catch each other failing.
+    """
+
+    __tablename__ = "payment"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    approval_decision_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("approval_decision.id", ondelete="RESTRICT"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    match_result_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("match_result.id", ondelete="RESTRICT"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("document.id", ondelete="RESTRICT"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("vendor.id", ondelete="RESTRICT"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+    #: The payee, by this system own identifier. The account and routing digits
+    #: on that row are RESTRICTED and are never copied here: a real rail adapter
+    #: resolves them at the last moment inside itself, and the sandbox never
+    #: needs them at all.
+    vendor_bank_account_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("vendor_bank_account.id", ondelete="RESTRICT"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    amount_minor: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    currency: Mapped[str] = mapped_column(
+        String(3), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    currency_exponent: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    state: Mapped[str] = mapped_column(
+        String(20), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    #: What the rail is told, so that asking twice is safe. Unique here as well
+    #: as derived from a unique column, because the derivation is code and this
+    #: is not.
+    idempotency_key: Mapped[str] = mapped_column(
+        String(120), nullable=False, unique=True, info=classify(Sensitivity.PUBLIC)
+    )
+    rail_id: Mapped[str] = mapped_column(
+        String(100), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+    #: The rail own identifier for this payment, so a dispute can be taken to it
+    #: with something it recognises. Absent until the rail has answered once.
+    rail_reference: Mapped[str | None] = mapped_column(
+        String(120), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+    failure_reason: Mapped[str | None] = mapped_column(
+        Text, nullable=True, info=classify(Sensitivity.INTERNAL)
+    )
+
+    #: How many times the rail has been asked. Distinct from the job attempt
+    #: count, which resets on a replay: this is how many times money could have
+    #: moved, and it is the number an incident review wants.
+    rail_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0"), info=classify(Sensitivity.PUBLIC)
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+        info=classify(Sensitivity.PUBLIC),
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+    settled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, info=classify(Sensitivity.PUBLIC)
+    )
+
+    __table_args__ = (
+        CheckConstraint("amount_minor > 0", name="ck_payment_amount_positive"),
+        CheckConstraint("currency_exponent >= 0", name="ck_payment_exponent"),
+        CheckConstraint(
+            "state in ('pending', 'submitting', 'submitted', 'settled', 'failed')",
+            name="ck_payment_state",
+        ),
+        # A failure must say why, and a success must not invent a reason. The
+        # same shape as `ck_approval_decision_reason_matches_actor`, and for the
+        # same reason: a nullable explanation nobody enforces is an explanation
+        # that is absent exactly when it is needed.
+        CheckConstraint(
+            "(state = 'failed') = (failure_reason IS NOT NULL)",
+            name="ck_payment_failure_is_explained",
+        ),
+        # The third idempotency layer. See the class docstring.
+        Index("uq_payment_authorisation", "approval_decision_id", unique=True),
+        # At most one live payment per body of evidence, shaped like
+        # `uq_approval_decision_terminal` and partial for the same reason: a
+        # failed payment must not block a corrected one.
+        Index(
+            "uq_payment_live_per_match",
+            "match_result_id",
+            unique=True,
+            postgresql_where=text("state IN ('pending', 'submitting', 'submitted', 'settled')"),
+        ),
+        Index("ix_payment_state", "state", "created_at"),
+        Index("ix_payment_document", "document_id"),
     )
