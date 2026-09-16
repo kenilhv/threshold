@@ -17,6 +17,12 @@ import { readSession } from "@/lib/session";
  * is the whole argument of this screen. A clean result only means something if
  * every check ran; an absent check and a passing check look identical from the
  * outside, and the difference is the entire value of the answer.
+ *
+ * The agent's escalation is rendered last and visibly apart, attributed to the
+ * tier that wrote it and quoted rather than stated. Everything above it is
+ * something this system established; that block is something a model said after
+ * reading a document the supplier wrote. A screen that presented both in the
+ * same voice would be the last place an injected instruction has to get to.
  */
 
 export const dynamic = "force-dynamic";
@@ -122,6 +128,36 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
           with the order
         </p>
       </div>
+
+      {/* Rendered after the evidence and visibly apart from it. The exceptions
+          above are things the system established; this is something an agent
+          said, and a reviewer must never have to guess which they are reading.
+
+          The attribution line is not decoration. The summary was written by a
+          model that read this supplier's own line descriptions, so on a hostile
+          invoice it is the supplier talking at one remove. Naming the author is
+          what keeps that legible. */}
+      {match.escalation && (
+        <div className="card agent">
+          <h3>Suggested by {match.escalation.triager_id}</h3>
+          <p className="meta">
+            An opinion about what to look at first. It changes nothing above: every
+            exception keeps the owner and the deadline it was raised with.
+          </p>
+          <p>
+            <strong>{match.escalation.owner_role.replace(/_/g, " ")} first</strong>
+            {" — "}
+            {match.escalation.codes.join(", ").replace(/_/g, " ")}
+          </p>
+          <blockquote>{match.escalation.summary}</blockquote>
+          {match.escalation.uncited_codes.length > 0 && (
+            <p className="meta">
+              Did not mention: {match.escalation.uncited_codes.join(", ").replace(/_/g, " ")}.
+              Those exceptions are still open and still owned.
+            </p>
+          )}
+        </div>
+      )}
 
       {history.length > 0 && (
         <div className="card">

@@ -37,9 +37,12 @@ Payment executor (Go) — idempotency key, double-entry ledger, Stripe sandbox
 Built today: everything down to and including the console. A PDF ingests, a
 worker extracts it, a second job matches it against its purchase order and the
 goods received, and either the system records its own approval or the invoice
-waits in a queue for the person who owns what went wrong. The `extract` step
-runs the deterministic tier; the model tier arrives with M7. `triage` is M7 and
-the payment executor is M8.
+waits in a queue for the person who owns what went wrong. An invoice that failed
+gets a third job, which asks the triage agent which desk should look first.
+
+Both agentic steps run their deterministic tier. Neither model tier exists yet,
+and both boundaries do — which is the order this project builds in, argued in
+D-029. The payment executor is M8.
 
 The diagram used to say "state machine" for the approval step. There is no
 state machine, and that is a decision rather than an omission: the current state
@@ -64,15 +67,45 @@ to score 100% against labelled dispositions — any miss is a bug, not a model
 failure — so the extraction and triage layers can be measured on their own axes
 without a single blended number hiding which part regressed.
 
-### The agent's only write is an escalation packet
+### The agent has no write, and `escalate` is not a tool
 
-The triage agent (M7) gets read tools plus exactly one terminal action:
-`escalate(...)`. A unit test reflects over the tool registry and asserts every
-other tool is read-only.
+The triage agent gets four read tools. `escalate` is not among them, and that is
+stronger than guarding it would be: it is not a tool at all, it is how the loop
+ends. The agent returns an `EscalationPacket` and `services/triage.py` decides
+what to do with it, exactly as it would with a form submitted by an untrusted
+client — because that is what it is.
+
+Every tool receives a session opened `SET TRANSACTION READ ONLY`, so a write
+through one fails at the database regardless of what the calling code believed.
+`tests/integration/test_agent_boundary.py` proves it by trying — including
+through raw `text()`, so the guarantee is shown not to live in the ORM.
 
 There is no code path from a model output to a payment. That is a structural
 property rather than a filter, and structural properties survive questioning in
 a way that "we added a guardrail" does not.
+
+**The agent is also not the router, which is what bounds a successful
+injection.** Exceptions carry `owner_role` and `due_at` stamped when the control
+fired, so every invoice is on a named desk with a clock on it before any agent
+runs. A packet may only cite codes actually recorded against that match result,
+and may only name an owner that one of the *cited* codes already routes to. A
+captured model can therefore reorder the priority of people already involved and
+write them a sentence. It cannot unassign anything, stop a clock, or approve.
+
+That rule exists because the red-team suite found the first version wrong:
+bounding `owner` to "one of the four roles" bounds the alphabet and not the
+choice, and a payment redirect addressed to an accounts-payable clerk needs no
+illegal characters. D-031 records the sequence, because a suite that only
+confirms the defences you already believed in is a suite you chose.
+
+The residual risk is named rather than hidden. The summary is free text written
+by a model that read the supplier's own line descriptions — `matching.py`
+interpolates them into `match_exception.detail` — and no validation escapes
+natural language. It is capped, held in `AgentText` so an f-string cannot leak
+it, and rendered by the console quoted and attributed to the tier that wrote it.
+Within that it can still persuade the person who reads it.
+`TestTheAttacksThatSurvive` asserts each bound rather than claiming the risk is
+gone.
 
 ### Restricted data never enters a model's context
 

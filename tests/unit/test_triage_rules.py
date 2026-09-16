@@ -213,7 +213,17 @@ class TestTheSummaryIsAssembledAndNotWritten:
             ExceptionCode.RECEIPT_MISSING,
         )
         assert packet is not None
-        assert "2 other desks" in packet.summary.untrusted
+        assert "2 other desks hold exceptions" in packet.summary.untrusted
+
+    def test_it_says_it_in_english(self) -> None:
+        """The first version of this read "1 other desk hold exceptions", which
+        is the sentence that tells a reviewer their share is not the whole
+        invoice. Prose that reads as machine output gets skimmed."""
+        packet = triage(ExceptionCode.BANK_DETAILS_CHANGED, ExceptionCode.PRICE_VARIANCE)
+        assert packet is not None
+        summary = packet.summary.untrusted
+        assert "1 other desk holds exceptions" in summary
+        assert summary.startswith("Treasury first:")
 
     def test_the_worst_case_invoice_still_fits_the_cap(self) -> None:
         """Every code in the taxonomy at once. Absurd as an invoice and exactly

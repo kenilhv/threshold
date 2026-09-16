@@ -5,6 +5,172 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-031 — The agent is not the router, and that is what bounds an injection
+
+**Date:** 2026-09-16 · **Status:** accepted
+
+The first version of the escalation packet bounded `owner` to the four members
+of `OwnerRole`. That reads like a control and is not one. It bounds the
+*alphabet* a captured model may spell in, not the *word* it chooses, and the
+attack that matters needs no illegal characters: a payment redirect addressed to
+an accounts-payable clerk is a real role, a real code, correctly spelled, and
+past every check.
+
+The red-team suite was written to test the boundary and found the boundary was
+wrong. That is recorded here rather than quietly fixed because the sequence is
+the argument: a suite that only confirms the defences you already believed in is
+a suite you chose.
+
+### What replaced it
+
+Routing already happened before any agent runs. `match_exception` rows carry
+`owner_role` and `due_at`, stamped from the frozen taxonomy at the moment the
+control fired, and a partial index makes them a role-scoped, deadline-ordered
+worklist. Every exception this system can raise is on a named desk with a clock
+on it whether or not an agent ever speaks.
+
+So the agent is not deciding who is responsible. It is saying which of the
+people *already involved* should look first. Two rules make that structural:
+
+* **Grounding.** Every cited code must be one recorded against this match
+  result. The agent cannot invent an exception or import one from another
+  invoice.
+* **Implication.** The owner must be the recorded owner of at least one **cited**
+  code.
+
+The second is phrased against the cited codes and not against the invoice, and
+the distinction is the whole of it. On an invoice carrying both a redirect and a
+price query, the buyer *is* implicated — so an invoice-level rule cheerfully
+routes the bank change to them. `misroute-to-an-owner-the-invoice-does-implicate`
+is the attack that forced the wording, and
+`test_the_owner_must_match_a_cited_code_and_not_merely_a_recorded_one` is what
+holds it.
+
+The blast radius of a completely successful injection is now: reorder the
+priority of people already going to be involved, and write them a sentence.
+
+### The evidence is the row, not the taxonomy
+
+`OpenException` carries the owner written when the exception was raised.
+`spec_for` has exactly one caller in `src/` — inside `_raise` — and this is not
+a second one. Re-deriving ownership at validation time would answer "who owns
+this code today" when the question is "was this escalation legitimate at the
+time", and `models.py` already argues that case for the column itself.
+
+It is also the type `domain/approval.py` already used to decide whether a
+*human* may approve, loaded by the same `open_exceptions`. An escalation and an
+approval are two things done about one set of open exceptions; a parallel notion
+of "what is open" would be a second thing to keep in step.
+
+### What this does not fix
+
+Nothing here touches the summary. It is free text, written by a model that read
+the supplier's own line descriptions, and no validation escapes natural
+language. It is capped at 600 characters, held in `AgentText` so an f-string
+cannot leak it, and rendered by the console quoted and attributed. Within that
+it can still persuade the person who reads it. That is named in
+`TestTheAttacksThatSurvive` with a test each, rather than described as handled.
+
+---
+
+## D-030 — The agent's evidence is fetched up front, through the tool registry
+
+**Date:** 2026-09-16 · **Status:** accepted
+
+`Triager.triage` receives the invoice already read, rather than a session to
+read it with. There is no tool-calling loop.
+
+The agent's readable surface for one invoice is four rows — the match result,
+its exceptions, the document record and the purchase order — and there is
+nothing to choose between them. A loop over four known rows buys no selectivity
+and costs a class of failures worth avoiding: partial reads, loops that do not
+terminate, a model that decides not to look at the exceptions. Every one of
+those is a failure mode with no upside here.
+
+The tools are not bypassed. `services/triage.py` builds the request by calling
+`tools.resolve("get_match")` and the other three, through a session opened
+`SET TRANSACTION READ ONLY`. That matters for a reason unrelated to elegance:
+it makes the registry the production path. `test_agent_boundary.py` asserts
+things about `TOOLS` — that every entry is a read, that `escalate` is not in it
+— and those assertions are worth something only while something runs them.
+
+A model tier that genuinely needs multi-turn retrieval will need this revisited.
+That would be a real trade, and the thing being traded away is written down
+here so the trade is visible when somebody makes it.
+
+### Two sessions, and the reason there are two
+
+The evidence is read inside `tools.read_only`. The escalation is written into
+the *caller's* session, which is a different connection, and only after the
+read-only transaction has closed.
+
+That asymmetry is deliberate in both directions. The connection the agent's data
+arrived on is provably incapable of carrying its output back — the usual shape
+of that bug is one session threaded through a pipeline until some helper deep
+inside it flushes, and here there is nothing to catch because the readable
+session is never in scope where the write is. And the write belongs in the
+caller's transaction, so a worker job that fails after escalating rolls the
+escalation back; otherwise its retry collides with
+`uq_escalation_match_result` and a transient failure becomes a permanent one.
+
+---
+
+## D-029 — The deterministic triage tier ships first, with an assembled summary
+
+**Date:** 2026-09-16 · **Status:** accepted
+
+`ARCHITECTURE.md` has said since M0 that the model tier arrives at M7. What
+arrives at M7 is the *boundary*, the persistence, the audit trail, the console
+rendering — and a tier with no model in it.
+
+The tier sorts: worst severity, then the tightest deadline, then the code's own
+name so the result is stable. On an invoice carrying a payment redirect and a
+price query it leads with the redirect, because four hours beats forty-eight and
+both block. That is the entire judgment.
+
+It escalates only when more than one desk is implicated, and returns `None`
+otherwise. An invoice whose exceptions all belong to one owner is already on
+that owner's queue, ordered by the deadline stamped when the control fired; an
+escalation there restates the exception list in different words and adds a row
+that looks like a finding. `None` is an answer, and on most invoices it is the
+right one.
+
+### Why this order and not the other
+
+Its summary is assembled from the frozen taxonomy, so no supplier-controlled
+text reaches the sentence a reviewer reads. A model tier reading the same
+request has read the invoice's own prose and will not be able to claim that.
+
+So shipping this first is not a placeholder. It means the escalation path, the
+validation, the persistence, the audit attribution and the console all get
+exercised — in CI, hermetically, on every commit — by something that cannot be
+captured. When a model tier arrives, the only new variable is the model. The
+alternative order gets a system whose failures are ambiguous on day one.
+
+The same argument produced `adapters/extraction/` at M2 and is carried over
+deliberately.
+
+### The escalation is its own table
+
+Not three columns on `match_result`. Columns on the decision row read as part of
+the decision, and six months from now somebody joins them into a report that
+treats an agent's opinion as a system finding. A foreign key with a different
+name does not invite that.
+
+`ck_escalation_cites_something` repeats the domain rule at the database.
+`domain/triage.py` protects the path through the agent; the constraint protects
+the table.
+
+`actor_type = 'agent'` has been legal in `ActorType` and in the audit table's
+check constraint since M0 with nothing producing one. It has a producer now.
+"The system did this" and "an agent suggested this" are different claims, and an
+audit trail that merged them would make the second unfalsifiable in the one
+record built to answer that question. The audit row also carries which recorded
+codes went *uncited* — the only durable trace an agent that stayed quiet about
+something leaves behind.
+
+---
+
 ## D-028 — The evaluation defends against being vacuous, not against being wrong
 
 **Date:** 2026-09-12 · **Status:** accepted · **Has a known, unpaid cost**

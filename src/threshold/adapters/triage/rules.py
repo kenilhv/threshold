@@ -52,7 +52,7 @@ from threshold.domain.triage import (
 
 #: Bumped when the ordering or the wording changes, because both change the
 #: output and a stored escalation has to say which version produced it.
-RULES_VERSION: Final = "rules-2026.09.1"
+RULES_VERSION: Final = "rules-2026.09.2"
 
 _SEVERITY_ORDER: Final = {Severity.BLOCK: 0, Severity.REVIEW: 1, Severity.INFO: 2}
 
@@ -71,8 +71,9 @@ def _describe(lead: OpenException, cited: tuple[ExceptionCode, ...], elsewhere: 
     tier from a model one and is asserted in `test_triage_rules.py`.
     """
     spec = spec_for(lead.code)
+    desk = lead.owner.value.replace("_", " ")
     parts = [
-        f"{lead.owner.value.replace('_', ' ')} first: {spec.summary} "
+        f"{desk[:1].upper()}{desk[1:]} first: {spec.summary} "
         f"Due in {spec.sla_hours}h, the tightest clock on this invoice."
     ]
     also = [code for code in cited if code != lead.code]
@@ -80,8 +81,11 @@ def _describe(lead: OpenException, cited: tuple[ExceptionCode, ...], elsewhere: 
         names = ", ".join(code.value.replace("_", " ") for code in also)
         parts.append(f"Also on this desk: {names}.")
     if elsewhere:
-        desks = "desk" if elsewhere == 1 else "desks"
-        parts.append(f"{elsewhere} other {desks} hold exceptions on the same invoice.")
+        # Agreement matters here more than it looks. This sentence is the one
+        # telling a reviewer that finishing their share does not finish the
+        # invoice, and prose that reads as machine output gets skimmed.
+        noun, verb = ("desk", "holds") if elsewhere == 1 else ("desks", "hold")
+        parts.append(f"{elsewhere} other {noun} {verb} exceptions on the same invoice.")
 
     summary = " ".join(parts)
     # The cap is a domain rule and this tier must not be the thing that trips

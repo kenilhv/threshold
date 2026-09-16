@@ -135,10 +135,21 @@ is one sentence: *a rule's correctness is checkable, a model's is only
 estimable, and in finance the difference between those two words is an audit
 finding.*
 
-**The agent's only write is an escalation packet.** It runs on exceptions only,
-holds read tools plus exactly one terminal action, and a test reflects over the
-tool registry asserting every other tool is read-only. There is no code path
-from a model output to a payment — a structural property, not a filter.
+**The agent has no write at all.** It runs on exceptions only and holds four
+read tools, each handed a session opened `SET TRANSACTION READ ONLY` — so a
+write fails at Postgres, not at a guardrail, and the integration suite proves it
+by trying. `escalate` is not a tool; it is how the loop ends. There is no code
+path from a model output to a payment.
+
+**A successful injection can reorder attention and nothing else.** Exceptions
+carry their owner and deadline from the moment the control fired, so every
+invoice is on a named desk with a clock on it before any agent runs. A packet
+may only cite codes actually recorded against that invoice, and may only name an
+owner one of those *cited* codes already routes to. The red-team suite found
+that rule missing — bounding the owner to "one of the four roles" bounds the
+alphabet, not the choice — and the attacks that still get through carry a test
+each asserting what bounds them, rather than a paragraph saying they are
+handled.
 
 **Restricted data never enters a model's context.** Bank details, tax IDs and
 invoice numbers are classified on the column and dropped from the review
@@ -228,7 +239,7 @@ Full reasoning, including what is deliberately *not* distributed and why:
       compares every count against a committed baseline, exactly, and the
       harness refuses to report at all if the corpus shrank or stopped
       producing errors to calibrate against.
-- [ ] M7 — the triage agent and its injection red-team suite
+- [x] M7 — the triage agent and its injection red-team suite
 - [ ] M8 — idempotent payments and a double-entry ledger
 - [ ] M9 — row-level security, pseudonymisation, written threat model
 - [ ] M10 — Terraform, load test, measured numbers

@@ -33,6 +33,7 @@ from threshold.domain.classification import Sensitivity
 from threshold.domain.extraction import redacted_fields
 from threshold.domain.models import (
     Document,
+    Escalation,
     Extraction,
     MatchException,
     MatchResult,
@@ -120,6 +121,34 @@ class VendorView(BaseModel):
     status: str
 
 
+class EscalationView(BaseModel):
+    """What the triage agent said, marked as an opinion rather than a finding.
+
+    Every field here is advisory. `owner_role` does not override the ownership
+    on the exceptions -- those are authoritative and are already in
+    ``exceptions`` above with their own deadlines. This says which of the desks
+    already involved the agent thinks should look first.
+
+    ``uncited_codes`` is the part a reviewer needs and would not think to ask
+    for: the exceptions the agent did *not* mention. An agent that stays quiet
+    about a payment redirect while escalating a price query produces a packet
+    that reads as a complete account of the invoice, and this is what makes that
+    visible without reading the audit trail.
+
+    ``summary`` is free text written by a model whose input included a document
+    the supplier controls. The console renders it attributed and never as
+    system prose -- see `domain/triage.py`.
+    """
+
+    owner_role: str
+    codes: list[str]
+    uncited_codes: list[str]
+    summary: str
+    #: The tier that produced it: a ruleset version or a model version.
+    triager_id: str
+    created_at: str
+
+
 class MatchView(BaseModel):
     """What the matcher concluded, and everything needed to argue with it.
 
@@ -143,6 +172,11 @@ class MatchView(BaseModel):
     #: None when the invoice's vendor did not resolve, which is itself an
     #: exception on the list above.
     vendor: VendorView | None = None
+    #: None when no agent ran, or when it had nothing to add -- which is the
+    #: common case, because the deterministic tier only speaks when more than
+    #: one desk is involved. Its absence is not a degraded answer: the
+    #: exceptions above carry their own owners and deadlines either way.
+    escalation: EscalationView | None = None
 
 
 @router.post(
@@ -341,6 +375,23 @@ async def get_match(
                 status=visible["status"],
             )
 
+    escalation = (
+        await session.execute(select(Escalation).where(Escalation.match_result_id == result.id))
+    ).scalar_one_or_none()
+    escalation_view: EscalationView | None = None
+    if escalation is not None:
+        cited = set(escalation.codes)
+        escalation_view = EscalationView(
+            owner_role=escalation.owner_role,
+            codes=list(escalation.codes),
+            # Computed here rather than stored, because it is a fact about two
+            # tables and storing it would give it a third chance to disagree.
+            uncited_codes=sorted({item.code for item in exceptions} - cited),
+            summary=escalation.summary,
+            triager_id=escalation.triager_id,
+            created_at=escalation.created_at.isoformat(),
+        )
+
     return MatchView(
         match_result_id=str(result.id),
         document_id=str(result.document_id),
@@ -351,6 +402,7 @@ async def get_match(
         line_pairs=list(result.line_pairs),
         skipped_checks=list(result.skipped_checks),
         vendor=vendor_view,
+        escalation=escalation_view,
         exceptions=[
             ExceptionView(
                 code=item.code,

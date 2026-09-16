@@ -34,6 +34,24 @@ export type ExceptionView = {
   breach: Record<string, unknown> | null;
 };
 
+/**
+ * What the triage agent said. Advisory, and rendered as such.
+ *
+ * `summary` is free text written by a model whose input included a document the
+ * supplier controls. It is the one string on this screen that is neither a
+ * system fact nor a person's words, and the screen has to say so -- a reviewer
+ * who reads it as the system's own conclusion has been told something by the
+ * supplier without knowing it.
+ */
+export type EscalationView = {
+  owner_role: string;
+  codes: string[];
+  uncited_codes: string[];
+  summary: string;
+  triager_id: string;
+  created_at: string;
+};
+
 export type MatchView = {
   match_result_id: string;
   document_id: string;
@@ -50,6 +68,7 @@ export type MatchView = {
     country_code: string;
     status: string;
   } | null;
+  escalation: EscalationView | null;
 };
 
 export type DecisionView = {

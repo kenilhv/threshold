@@ -297,3 +297,32 @@ code {
   padding: 0.1rem 0.35rem;
   border-radius: 4px;
 }
+
+/* The agent's escalation.
+ *
+ * Deliberately the quietest block on the page and the only one with a visible
+ * author. Everything else on this screen is something the system established;
+ * this is something a model said after reading a document the supplier wrote,
+ * and on a hostile invoice it is the supplier talking at one remove.
+ *
+ * So it is set apart rather than emphasised. A styling that made it look
+ * authoritative would undo the containment `domain/triage.py` spends a module
+ * building -- the text would still be attacker-influenced and would now read as
+ * a finding. Quoted, greyed, and attributed is the whole of the treatment. */
+.card.agent {
+  background: var(--page);
+  border-style: dashed;
+}
+
+.card.agent h3 {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.card.agent blockquote {
+  margin: 0.75rem 0;
+  padding: 0 0 0 0.85rem;
+  border-left: 3px solid var(--line);
+  color: var(--ink-soft);
+  font-style: italic;
+}
