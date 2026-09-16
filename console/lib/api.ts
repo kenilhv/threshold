@@ -80,6 +80,9 @@ export type MatchView = {
   disposition: string;
   policy_version: string;
   decided_at: string;
+  amount_minor: number | null;
+  amount: string | null;
+  currency: string | null;
   line_pairs: { invoice_line: number; po_line: number }[];
   skipped_checks: string[];
   exceptions: ExceptionView[];

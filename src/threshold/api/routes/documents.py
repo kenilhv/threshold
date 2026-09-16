@@ -197,6 +197,12 @@ class MatchView(BaseModel):
     disposition: str
     policy_version: str
     decided_at: str
+    #: What this decision is about. Null when the invoice total could not be read
+    #: well enough to pay against -- which is not a missing field, it is the
+    #: reason one of the exceptions above is there.
+    amount_minor: int | None = None
+    amount: str | None = None
+    currency: str | None = None
     line_pairs: list[dict[str, int]]
     skipped_checks: list[str]
     exceptions: list[ExceptionView]
@@ -452,6 +458,13 @@ async def get_match(
         disposition=result.disposition,
         policy_version=result.policy_version,
         decided_at=result.decided_at.isoformat(),
+        amount_minor=result.amount_minor,
+        amount=(
+            None
+            if result.amount_minor is None or result.currency is None
+            else str(to_major(result.amount_minor, result.currency))
+        ),
+        currency=result.currency,
         line_pairs=list(result.line_pairs),
         skipped_checks=list(result.skipped_checks),
         vendor=vendor_view,

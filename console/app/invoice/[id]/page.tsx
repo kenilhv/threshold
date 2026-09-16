@@ -65,6 +65,14 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
       </p>
 
       <h2>{match.vendor ? match.vendor.display_name : "Vendor did not resolve"}</h2>
+      {/* The number the whole screen is about. Absent when the total could not
+          be read, which is not a missing field -- it is the reason one of the
+          exceptions below is there. */}
+      {match.amount && (
+        <p className="meta">
+          {match.amount} {match.currency}
+        </p>
+      )}
       <p className="lede">
         Judged under policy <code>{match.policy_version}</code> on evidence version{" "}
         {match.version}.{" "}
