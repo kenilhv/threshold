@@ -30,8 +30,10 @@ from threshold.adapters.extraction.port import ExtractionError
 from threshold.adapters.queue import PostgresJobQueue
 from threshold.api.dependencies import get_ingest_service, get_matching_service
 from threshold.domain.jobs import JobKind, PermanentJobError, TransientJobError
+from threshold.domain.matching import Disposition
 from threshold.domain.models import Document
 from threshold.services.matching import MatchingError
+from threshold.services.triage import TriageService
 
 log = structlog.get_logger(__name__)
 
@@ -107,6 +109,21 @@ async def match_invoice(session: AsyncSession, payload: dict[str, Any]) -> None:
         # No document, or no extraction to judge. Neither is fixed by retrying.
         raise PermanentJobError(str(exc)) from exc
 
+    if result.disposition != Disposition.AUTO_APPROVE.value:
+        # Enqueued in the same transaction as the decision, for the same reason
+        # matching is enqueued with the extraction: if the decision rolls back
+        # there is nothing to triage, and a broker here would eventually ask an
+        # agent to explain a match result that does not exist.
+        #
+        # Keyed on the match result rather than the document, because a document
+        # re-decided after a correction is a new thing to have an opinion about.
+        await PostgresJobQueue().enqueue(
+            session,
+            kind=JobKind.TRIAGE_INVOICE,
+            payload={"match_result_id": str(result.id)},
+            dedupe_key=f"triage:{result.id}",
+        )
+
     log.info(
         "handler.matched",
         document_id=str(document_id),
@@ -115,17 +132,47 @@ async def match_invoice(session: AsyncSession, payload: dict[str, Any]) -> None:
     )
 
 
+async def triage_invoice(session: AsyncSession, payload: dict[str, Any]) -> None:
+    """Ask the triage agent which desk should look at this invoice first.
+
+    Nothing here is load-bearing for the invoice. The exceptions were routed and
+    clocked when they were raised, so a failure -- a model tier down, a packet
+    that would not validate -- costs a reviewer some context and costs the
+    invoice nothing. That is why it is a separate job: a job that can fail
+    without consequence must not share a transaction with one that cannot.
+    """
+    match_result_id = _uuid_from(payload, "match_result_id")
+
+    escalation = await TriageService().triage(session, match_result_id)
+    if escalation is None:
+        log.info("handler.triaged_without_opinion", match_result_id=str(match_result_id))
+        return
+
+    log.info(
+        "handler.triaged",
+        match_result_id=str(match_result_id),
+        owner_role=escalation.owner_role,
+        codes=escalation.codes,
+        triager_id=escalation.triager_id,
+    )
+
+
 def _document_id_from(payload: dict[str, Any]) -> uuid.UUID:
-    raw = payload.get("document_id")
+    return _uuid_from(payload, "document_id")
+
+
+def _uuid_from(payload: dict[str, Any], key: str) -> uuid.UUID:
+    raw = payload.get(key)
     if not isinstance(raw, str):
-        raise PermanentJobError("payload has no document_id")
+        raise PermanentJobError(f"payload has no {key}")
     try:
         return uuid.UUID(raw)
     except ValueError as exc:
-        raise PermanentJobError(f"document_id is not a uuid: {raw!r}") from exc
+        raise PermanentJobError(f"{key} is not a uuid: {raw!r}") from exc
 
 
 HANDLERS: Final[dict[str, Handler]] = {
     JobKind.EXTRACT_DOCUMENT.value: extract_document,
     JobKind.MATCH_INVOICE.value: match_invoice,
+    JobKind.TRIAGE_INVOICE.value: triage_invoice,
 }

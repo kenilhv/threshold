@@ -61,6 +61,22 @@ class Actor:
     def system(cls) -> Actor:
         return cls(type="system")
 
+    @classmethod
+    def agent(cls, triager_id: str) -> Actor:
+        """A model or ruleset, identified by its version.
+
+        ``agent`` has been in ``ActorType`` and in the table's check constraint
+        since M0 with nothing that produced one. `services/triage.py` is the
+        first, and the distinction it draws is the one that matters in an audit:
+        "the system did this because a rule said so" and "an agent suggested
+        this" are different claims, and collapsing them into ``system`` would
+        make the second one unfalsifiable.
+
+        The id is the triager version rather than a subject, because that is
+        what identifies the thing that acted. There is nobody to call.
+        """
+        return cls(type="agent", id=triager_id, label=triager_id)
+
 
 def current_trace_id() -> str | None:
     """The active trace id: 32 lowercase hex, or ``None`` outside a trace.

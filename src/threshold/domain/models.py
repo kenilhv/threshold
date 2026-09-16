@@ -1099,3 +1099,92 @@ class ApprovalDecision(Base):
         ),
         Index("ix_approval_decision_document", "document_id", "decided_at"),
     )
+
+
+class Escalation(Base):
+    """What the triage agent said, kept separate from what the system decided.
+
+    A row here changes nothing. The exception it cites already carries its own
+    ``owner_role`` and ``due_at``, written when the control fired; this says
+    which of those desks should look first and offers a sentence explaining why.
+    Deleting every row in this table would cost the reviewer context and would
+    not move a single invoice.
+
+    That separation is the reason it is its own table rather than three columns
+    on ``match_result``. Columns on the decision row read as part of the
+    decision, and six months from now somebody would join them into a report
+    that treats an agent's opinion as a system finding. A foreign key with a
+    different name does not invite that.
+
+    ``summary`` is the only free text a model wrote anywhere in this schema. It
+    is INTERNAL, which is what the review projection needs, and there is no
+    agent tool that reads this table -- so a later escalation cannot be
+    influenced by an earlier one's prose.
+    """
+
+    __tablename__ = "escalation"
+
+    id: Mapped[uuid.UUID] = _pk()
+
+    match_result_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True),
+        ForeignKey("match_result.id", ondelete="CASCADE"),
+        nullable=False,
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    #: Which desk should look first. Not authoritative: `match_exception`
+    #: carries the ownership that routing and authorisation actually read, and
+    #: `domain/triage.py` refuses any value not already recorded there.
+    owner_role: Mapped[str] = mapped_column(
+        String(20), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    #: The exception codes cited, which must be a subset of those recorded.
+    #: Stored so the uncited remainder is recoverable by difference -- an agent
+    #: that stays quiet about one of three exceptions leaves that trace here.
+    codes: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    #: Attacker-influenced by construction: the model that wrote it read
+    #: exception details containing the supplier's own line descriptions. The
+    #: console must render it as something the agent said rather than as
+    #: something the system knows.
+    summary: Mapped[str] = mapped_column(Text, nullable=False, info=classify(Sensitivity.INTERNAL))
+
+    #: Which tier produced it -- the deterministic ruleset and its version, or a
+    #: model and its version. Recorded for the same reason `Extraction` records
+    #: its extractor: a change in output must be attributable to a change in
+    #: producer rather than investigated as a mystery.
+    triager_id: Mapped[str] = mapped_column(
+        String(100), nullable=False, info=classify(Sensitivity.PUBLIC)
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+        info=classify(Sensitivity.PUBLIC),
+    )
+
+    match_result: Mapped[MatchResult] = relationship()
+
+    __table_args__ = (
+        # The domain rule, repeated at the table. `domain/triage.py` refuses an
+        # empty code list, which protects the path through the agent; this
+        # protects the table from everything else.
+        CheckConstraint(
+            "jsonb_array_length(codes) > 0",
+            name="ck_escalation_cites_something",
+        ),
+        # One escalation per match result. A second is not a correction -- the
+        # match result is itself versioned, so a re-decided invoice gets a new
+        # row to escalate against, and two escalations on one decision would be
+        # an agent that ran twice and a reviewer with two opinions to reconcile.
+        Index("uq_escalation_match_result", "match_result_id", unique=True),
+        Index("ix_escalation_owner", "owner_role", "created_at"),
+    )

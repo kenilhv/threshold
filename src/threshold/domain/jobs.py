@@ -38,6 +38,12 @@ class JobState(StrEnum):
 class JobKind(StrEnum):
     EXTRACT_DOCUMENT = "extract_document"
     MATCH_INVOICE = "match_invoice"
+    #: Runs after a match that raised exceptions, and only then. Its own job
+    #: rather than a tail on `match_invoice` because it is allowed to fail: an
+    #: escalation is advice, and an invoice must be routed and clocked whether
+    #: or not the advice arrives. Chaining it inline would let a model tier
+    #: being slow, down, or captured hold up the decision that blocks a payment.
+    TRIAGE_INVOICE = "triage_invoice"
 
 
 #: How long a claim is good for. A worker must finish or heartbeat within this,
