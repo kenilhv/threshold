@@ -256,10 +256,47 @@ Full reasoning, including what is deliberately *not* distributed and why:
       compares every count against a committed baseline, exactly, and the
       harness refuses to report at all if the corpus shrank or stopped
       producing errors to calibrate against.
-- [x] M7 — the triage agent and its injection red-team suite
-- [x] M8 — idempotent payments and a double-entry ledger
-- [ ] M9 — row-level security, pseudonymisation, written threat model
-- [ ] M10 — Terraform, load test, measured numbers
+- [x] **M7 — the triage agent, and a red team that found the boundary wrong.**
+      The agent has four read tools, each handed a session opened
+      `SET TRANSACTION READ ONLY`, so a write fails at Postgres rather than at a
+      guardrail — proved by trying, including through raw SQL so the guarantee
+      is shown not to live in the ORM. `escalate` is not a tool; it is how the
+      loop ends. The red-team suite was written to test that boundary and found
+      it insufficient: bounding the escalation's owner to "one of the four
+      roles" bounds the alphabet and not the choice, and a payment redirect
+      addressed to an accounts-payable clerk needs no illegal characters. A
+      packet may now only cite codes actually recorded against that invoice and
+      only name an owner one of those *cited* codes already routes to, so a
+      completely captured model can reorder the priority of people already
+      involved and do nothing else. Thirteen attacks, nine refused and four that
+      get through carrying a test each for what bounds them. Every property was
+      confirmed by deleting it and watching the suite die.
+- [x] **M8 — money that cannot quietly stop adding up.** Double-entry, with the
+      balance rule enforced by a deferred constraint trigger at `COMMIT` rather
+      than by a service method somebody has to remember to call — and firing on
+      `UPDATE` and `DELETE` too, because removing a good entry from a
+      transaction that already balanced is the quiet attack on a ledger. The
+      first version of that trigger had a hole, found by checking a fifth case
+      after four had passed, and 0008 is the fix. A payment is committed as
+      `submitting` *before* the rail is called, because a rail that does not
+      answer may still have taken the money; every retry sends the same
+      idempotency key, derived from the approval decision the payment row is
+      also unique on. Building it turned up that the schema could say an invoice
+      was blocked and could not say for how much.
+- [ ] **M9 — row-level security, pseudonymisation, written threat model.** Not
+      started. The classification layer it would build on exists and is load
+      bearing: every column declares a sensitivity, an undeclared one is treated
+      as restricted, and the review projection is derived from the mapper rather
+      than from an allowlist. What is missing is enforcement in the database
+      rather than in the application, a stable-alias scheme that preserves the
+      shape of a judgment, and the threat model written down where it can be
+      argued with.
+- [ ] **M10 — Terraform, load test, measured numbers.** Not started, and the
+      most deferrable: it is the milestone that describes deployment rather than
+      behaviour. The performance numbers this system does have were measured
+      when they mattered — histogram buckets from real distributions, the
+      constraint trigger's 0.285 ms, the alert's detection latency timed with
+      `make demo-alert` — rather than collected at the end as an exercise.
 
 ---
 
