@@ -71,11 +71,20 @@ were found: `GET /v1/documents/{id}` had been answering anybody since M1 and
 `GET /v1/documents/{id}/match` since M3, because nobody had ever enumerated the
 surface. Both returned the vendor, the amount and every exception's free text.
 
-**Staff → console → API.** Staff never hold a bearer token. The console is a
-back-end for front-end: it performs authorization code with PKCE against
+**Staff → console → API.** No page script holds a bearer token. The console is
+a back-end for front-end: it performs authorization code with PKCE against
 Keycloak, keeps the access token in an httpOnly cookie on its own origin, and
-calls the API from the server (`console/lib/session.ts`). The browser holds a
-session cookie and nothing else.
+calls the API from the server (`console/lib/session.ts`).
+
+The cookie *is* the token, base64url-encoded — encoding, not encryption. So the
+control is `httpOnly`, which stops an injected script reading it, and not
+secrecy from the browser. Anyone who steals the cookie holds a bearer token
+usable directly against the API until it expires, which is a larger prize than
+a console session and is why `sameSite` and `secure` matter here.
+
+Four milestones of documentation said "the browser never holds a token"
+instead, in five places including this one. It was found by a review that
+opened the file rather than the docs.
 
 Authentication is delegated to Keycloak; roles come from `realm_access.roles`
 and anything unrecognised is dropped (`src/threshold/api/auth.py`). The system
@@ -335,13 +344,25 @@ marketing.
 | Audit rows are not authenticated | A compromised process can write convincing lies | §4 |
 | No second signature on large amounts | One authorised person can release any amount | §B |
 | `heartbeat()` is never called by the worker loop | A job that outlives the two-minute lease is reaped and run again while the first attempt is still working. Exercised by tests, so it is an unused capability rather than dead code | `workers/runtime.py` |
-| The reaper's advisory lock is session-level, taken on a pooled connection, and its result cached in a Python flag | The cached flag outlives the lock. When the connection holding it is recycled Postgres releases the lock, but the worker never rechecks, so it keeps reaping while a second worker can now take the same lock. Invisible at one worker | `workers/runtime.py`, `adapters/queue.py` |
 | No `Idempotency-Key` on the approvals endpoint | A retried approval is refused rather than replayed; money does not move twice, but the message is wrong | `api/routes/approvals.py` |
 | Orphaned objects are never reclaimed | Storage grows; documented as a deliberate trade with an unpaid cost | D-006 |
 | Fixture credentials are committed | Local stack only, and marked as such — but they are in git history | `docker-compose.yml`, `.env.example` |
 | Nothing is encrypted at rest | Deployment property | M10 |
 
-The first three are the ones that matter. The rest are debts with owners.
+The first two are the ones that matter. The rest are debts with owners.
+
+**One row left this table rather than being reworded.** The reaper's advisory
+lock was session-level, taken on a pooled connection, with the result cached in
+a Python flag — so the flag outlived the lock, and a recycled connection left
+the worker believing it was still the elected reaper while a second worker could
+take the same lock. It is now `pg_try_advisory_xact_lock`, re-taken every cycle,
+with no cached state to go stale.
+
+That it was in this table is how it got fixed: the portfolio review read the
+table, saw a one-word change behind it, and asked why it was being documented
+instead. Before the change the running worker held the lock on an `idle`
+connection, which is the defect visible in `pg_locks`; after it, nothing is held
+between cycles.
 
 ---
 

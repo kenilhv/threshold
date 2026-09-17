@@ -278,8 +278,15 @@ over a bank-detail change" is a number you can count.
 
 The console is a back-end for front-end. It performs authorization code with
 PKCE against Keycloak by hand, keeps the access token in an httpOnly cookie on
-its own origin, and calls the API from the server. The browser never holds a
-bearer token.
+its own origin, and calls the API from the server. No page script can read that
+token.
+
+Precisely that, and not "the browser never holds a token", which is what this
+paragraph used to say and which contradicts the sentence before it. The browser
+holds the token; it is base64url-encoded into the cookie, which is encoding
+rather than encryption. `httpOnly` is what stops `document.cookie` and every
+injected script from reading it, and that is the property the argument below
+needs. A stolen cookie is still a bearer token against the API.
 
 That is a choice with a cost — an extra hop on every page — and the reason is
 specific to this application. It authorises payment, and it renders text that

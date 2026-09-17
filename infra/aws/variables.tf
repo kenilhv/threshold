@@ -78,7 +78,7 @@ variable "api_desired_count" {
 }
 
 variable "worker_desired_count" {
-  description = "How many worker tasks. See the comment in compute.tf: more than one is what the reaper's advisory lock does not yet handle correctly."
+  description = "How many worker tasks. Safe to raise: claims are FOR UPDATE SKIP LOCKED and the reaper election is a transaction-scoped advisory lock. One is enough for the load measured in the README."
   type        = number
   default     = 1
 }

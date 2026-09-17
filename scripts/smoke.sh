@@ -17,6 +17,26 @@ fail=0
 # is the same class of defect this script exists to catch.
 checks=0
 
+# Reported, counted separately, and never a failure. The distinction this draws
+# is the one that matters to somebody running this for the first time: red must
+# mean "the system is wrong", not "your laptop is missing httpx". Two checks
+# below shell out to host Python scripts that import httpx and SQLAlchemy, and
+# before this existed a reviewer with only Docker -- which is all the README
+# asks for -- got a red "Smoke test failed" for an environment they were told
+# they did not need.
+skipped=0
+skip() {
+  local name="$1" why="$2"
+  skipped=$((skipped + 1))
+  printf '  \033[33mSKIP\033[0m  %-42s %s\n' "$name" "$why"
+}
+
+# Whether the host has the dev extras these two scripts need. `make up` alone
+# does not install them, and is not supposed to.
+host_python_ready() {
+  python -c 'import httpx, sqlalchemy' >/dev/null 2>&1
+}
+
 check() {
   local name="$1" expected="$2" actual="$3"
   checks=$((checks + 1))
@@ -317,8 +337,12 @@ check "both services are reporting metrics" "2" \
 # Go, and a wrong guess is an empty dashboard panel and no error anywhere.
 # Polls: push is not scrape, so a metric recorded by the work above has not
 # necessarily left the process yet.
-check "every declared metric reached Prometheus" "0" \
-  "$(python scripts/check_metrics.py 2>/dev/null)"
+if host_python_ready; then
+  check "every declared metric reached Prometheus" "0" \
+    "$(python scripts/check_metrics.py 2>/dev/null)"
+else
+  skip "every declared metric reached Prometheus" "needs pip install -e '.[dev]'"
+fi
 
 # The rules are loaded, not merely written. A rules file with a typo in a
 # path is a file Prometheus never reads, and it says so once at startup and
@@ -352,12 +376,20 @@ check "the dashboard is provisioned" "threshold-overview" \
 # looked up in Tempo, and found to contain spans from both processes. That is
 # the promise ARCHITECTURE.md has made since M0, checked against the two
 # systems that would have to agree for it to be true.
-check "an audit row's trace id resolves in Tempo, across both services" "2" \
-  "$(python scripts/check_trace.py 2>/dev/null)"
+if host_python_ready; then
+  check "an audit row's trace id resolves in Tempo, across both services" "2" \
+    "$(python scripts/check_trace.py 2>/dev/null)"
+else
+  skip "an audit row's trace id resolves in Tempo" "needs pip install -e '.[dev]'"
+fi
 
 echo
 if [[ $fail -eq 0 ]]; then
-  printf '\033[32mAll %d checks passed.\033[0m\n\n' "$checks"
+  printf '\033[32mAll %d checks passed.\033[0m\n' "$checks"
+  if [[ $skipped -gt 0 ]]; then
+    printf '\033[33m%d skipped\033[0m -- host-side checks needing the dev extras. Everything Docker can answer for was answered.\n' "$skipped"
+  fi
+  printf '\n'
 else
   printf '\033[31mSmoke test failed.\033[0m\n\n'
   exit 1

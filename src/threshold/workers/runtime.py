@@ -174,7 +174,6 @@ class WorkerRuntime:
         self._batch_size = batch_size
         self._poll = poll_interval.total_seconds()
         self._stopping = asyncio.Event()
-        self._reaper_holds_lock = False
 
     def request_stop(self) -> None:
         self._stopping.set()
@@ -383,10 +382,13 @@ class WorkerRuntime:
                 return
             try:
                 async with session_scope(self._sessions) as session:
-                    if not self._reaper_holds_lock:
-                        self._reaper_holds_lock = await advisory_lock(session, REAPER_LOCK_KEY)
-                        if not self._reaper_holds_lock:
-                            continue
+                    # Re-elected every cycle rather than remembered. The lock is
+                    # transaction-scoped and released at COMMIT, so holding it
+                    # once says nothing about holding it now -- which is exactly
+                    # what the previous version got wrong by caching the answer
+                    # in an instance flag.
+                    if not await advisory_lock(session, REAPER_LOCK_KEY):
+                        continue
                     await self._queue.reap_expired_leases(session)
                     await self._observe_queue(session)
             except Exception:

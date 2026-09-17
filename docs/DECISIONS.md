@@ -1056,7 +1056,7 @@ the sum of two waits in different systems.
 Every rule links to a runbook and a test asserts the file exists, because a dead
 link is discovered by the person least able to cope with it — someone paged at
 3am, following the link precisely because they do not already know the answer.
-Six runbooks serve the nine alerts, each opening with the alerts it covers, what
+Seven runbooks serve the eleven alerts, each opening with the alerts it covers, what
 normal looks like in measured numbers, how to tell the cases apart, and a
 "what not to do" section. Two of those matter more than the diagnosis: do not
 clear the queue, and do not widen tolerances to silence
@@ -1545,9 +1545,12 @@ enforced by a partial unique index. A terminal auto-approval would make D-016's
 documented worst gap — an unreadable payment block auto-approves — permanently
 unreachable by a person.
 
-**The console is a back-end for front-end.** The browser never holds a token;
-the console exchanges the code server-side and keeps the token in an httpOnly
-cookie. It authorises payment and renders vendor-supplied text, and a single XSS
+**The console is a back-end for front-end.** No page script can read the token;
+the console exchanges the code server-side and keeps it in an httpOnly cookie.
+(Not "the browser never holds a token", which this record claimed until the
+portfolio review of 2026-09-17 opened `console/lib/session.ts` and found the
+token base64url-encoded into the cookie one screen below the comment saying
+otherwise. The design was right and the sentence was not.) It authorises payment and renders vendor-supplied text, and a single XSS
 in a public-client console would hand out a bearer token for it. PKCE is written
 by hand rather than through a library, so the four things that matter — `state`,
 the verifier, server-side exchange, and the public/internal issuer split — are

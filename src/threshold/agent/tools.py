@@ -176,7 +176,12 @@ TOOLS: Final[Mapping[str, Tool]] = {
         ),
         Tool(
             name="get_document",
-            description="The document record: filename, size, when it arrived.",
+            # Not the filename: D-036 marks it an identity column and the
+            # projection drops it, so advertising it here would describe a
+            # field the handler cannot return. A tool description is what the
+            # model reads when choosing, and a promise it cannot keep is a
+            # worse failure than a narrow one.
+            description="The document record: type, size, source, when it arrived.",
             handler=get_document,
         ),
         Tool(

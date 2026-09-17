@@ -7,7 +7,7 @@ The name is the argument. The system's entire job is to hold a defensible line
 between what a machine may execute alone and what a human must decide, and to
 show where that line is and why it sits there.
 
-> **Status: M8 of ten.** An invoice goes the whole way: it arrives, it is read,
+> **Status: complete, M0 through M10.** An invoice goes the whole way: it arrives, it is read,
 > it is matched against its purchase order and the goods received, and then one
 > of three things happens. It clears every check and the system records its own
 > approval. Or something disagrees and it waits in a queue for the person who
@@ -44,6 +44,12 @@ show where that line is and why it sits there.
 >
 > Every claim in this README is checkable against the repository. Where a number
 > appears it was measured, and where something does not exist it says so.
+>
+> That is an invitation, so it was taken up: on 2026-09-17 four reviewers
+> checked every claim here against the code. Six counts were stale and one
+> security claim was wrong — the console's, and it was wrong in the project's
+> own subject. All seven are fixed, the two counts that would drift again are
+> no longer numbers, and `docs/DECISIONS.md` records what the wrong one said.
 
 ---
 
@@ -65,7 +71,7 @@ loads reference data, then starts the API, the worker and the console.
 | Keycloak | <http://localhost:8080> — `admin` / `admin` |
 | Dashboards | <http://localhost:3001> — Grafana, no login. Decisions, queue, API. |
 | Traces | <http://localhost:3200> — Tempo. One invoice is one trace across both services. |
-| Metrics | <http://localhost:9090> — Prometheus, receiving OTLP rather than scraping. Nine alert rules, each proved to fire and proved to stay quiet. |
+| Metrics | <http://localhost:9090> — Prometheus, receiving OTLP rather than scraping. Eleven alert rules, each proved to fire and proved to stay quiet. |
 | Runbooks | [docs/runbooks](docs/runbooks) — what to do when one of them pages. `make demo-alert` makes one fire. |
 | **Console** | <http://localhost:3000> — sign in as `clerk`, `buyer`, `receiving`, `treasury`, `controller` or `auditor` |
 
@@ -138,6 +144,13 @@ volumes), `make migrate-roundtrip`, `make eval-check`, `make verify`.
 
 Requires Docker with Compose v2. No cloud account, no API keys, no paid
 services.
+
+Two of the targets above want more than Docker, and it is better to say so than
+to let you find out: `make demo-match` runs on the host and needs
+`pip install -e ".[dev,fixtures]"`, because it renders invoice PDFs before
+submitting them. `make smoke` runs without it and says which checks it skipped
+-- the two that reach Tempo and Prometheus through host Python. Everything the
+containers can answer for, it answers for.
 
 ---
 
@@ -230,11 +243,11 @@ src/threshold/
   observability/ the metric registry every dashboard and alert is checked against
 console/        the operator console (Next.js, back-end for front-end)
 evals/          the extraction evaluation harness and its committed baseline
-migrations/     Alembic, 8 revisions, each reversible and proved so
+migrations/     Alembic, every revision reversible and proved so in CI
 infra/local/    compose, the Keycloak realm, Prometheus rules, the Grafana dashboard
 docs/           ARCHITECTURE.md, DECISIONS.md (37 records), THREAT-MODEL.md, 7 runbooks
-tests/unit/     690 tests, no stack required
-tests/integration/  161 tests, requires `make up`
+tests/unit/     757 tests, no stack required
+tests/integration/  393 tests, requires `make up`
 ```
 
 The split that matters is `domain/` against everything else. A rule in `domain/`
@@ -286,8 +299,8 @@ reason is stated where it happens rather than implied.
       every model to prove it. Decisions live in one append-only table where
       the machine and the person are peers, and you may decide an invoice only
       if you own every open exception on it. The console is a back-end for
-      front-end — the browser never holds a token — and works with JavaScript
-      disabled.
+      front-end — no page script can read the token — and works with
+      JavaScript disabled.
 - [x] **M5 — observability that can be checked.** One invoice is one trace
       across two processes and two queue hops, and the trace id on every audit
       row resolves in Tempo to the whole story — including the SQL spans, which
@@ -299,9 +312,9 @@ reason is stated where it happens rather than implied.
       dashboard panels and alert rules that read it, and tests assert in both
       directions, because a metric nobody plots is this repository's oldest
       defect wearing a new hat. Readiness checks what the service actually uses
-      and deliberately never the identity provider. Nine alert rules, each with
-      a test that makes it fire and a test that keeps it quiet, and six runbooks
-      that are checked to exist.
+      and deliberately never the identity provider. Eleven alert rules, each
+      with a test that makes it fire and a test that keeps it quiet, and seven
+      runbooks that are checked to exist.
 - [x] **M6 — measuring it instead of asserting it.** Four hundred synthetic
       invoices whose answer key is the spec that rendered them, so ground truth
       cannot drift from the document. The auto-approval gate is no longer a

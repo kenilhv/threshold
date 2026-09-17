@@ -1,8 +1,21 @@
 import { cookies } from "next/headers";
 
 /**
- * The console is a back-end for front-end: the browser never holds an access
+ * The console is a back-end for front-end: no page script can read the access
  * token.
+ *
+ * Stated precisely, because an earlier version of this comment said "the
+ * browser never holds an access token" and that is false. The browser holds it:
+ * `writeSession` base64url-encodes this whole session object -- token included
+ * -- into a cookie. Encoding, not encryption, and anyone who opens this file
+ * can see it. What the cookie's `httpOnly` flag buys is that `document.cookie`
+ * and every other page script cannot read it, which is the property the XSS
+ * argument below actually needs.
+ *
+ * The residual, since the difference is the point: a stolen *cookie* is a
+ * bearer token usable directly against the API until it expires, not merely a
+ * console session. `sameSite: "lax"` and `secure` in production are what narrow
+ * the ways it gets stolen.
  *
  * The alternative — a public client doing PKCE in the browser and keeping the
  * token in memory or storage — is a legitimate pattern, and it is the wrong one

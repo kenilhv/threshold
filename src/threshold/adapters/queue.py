@@ -612,10 +612,25 @@ class PostgresJobQueue:
 
 
 async def advisory_lock(session: AsyncSession, key: int) -> bool:
-    """Try to take a Postgres advisory lock, without blocking.
+    """Try to take a transaction-scoped advisory lock, without blocking.
 
     Used so exactly one worker runs the reaper at a time. The reaper is
     idempotent and would be harmless run concurrently, but there is no reason
     for eight workers to do the same scan every few seconds.
+
+    `pg_try_advisory_xact_lock`, not `pg_try_advisory_lock`. The session-level
+    version was the M9 threat model's own weakness table entry, and the failure
+    is subtler than "the lock leaks": the caller cached the result in a Python
+    flag and never asked again, so when the pooled connection holding the lock
+    was recycled Postgres released it while the worker went on believing it was
+    the elected reaper. A second worker could then take the same lock, and both
+    would reap and publish queue observations. Invisible at one worker, which is
+    the deployment this has always run.
+
+    A transaction-scoped lock releases at COMMIT, so it has to be re-taken every
+    cycle. That is the point: the election is re-run each time rather than
+    remembered, and there is no cached state to go stale.
     """
-    return bool((await session.execute(select(text(f"pg_try_advisory_lock({key})")))).scalar_one())
+    return bool(
+        (await session.execute(select(text(f"pg_try_advisory_xact_lock({key})")))).scalar_one()
+    )

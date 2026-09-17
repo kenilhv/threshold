@@ -151,16 +151,18 @@ resource "aws_ecs_task_definition" "worker" {
   ])
 }
 
-# `worker_desired_count` defaults to 1, and that default is a known limitation
-# rather than a capacity judgment.
+# `worker_desired_count` defaults to 1, and that is now a capacity judgment
+# rather than a limitation.
 #
-# The queue itself is safe to run wide: `claim` is `FOR UPDATE SKIP LOCKED`, so
-# N workers take disjoint jobs. What is not yet safe is the reaper election. It
-# uses a session-level `pg_try_advisory_lock` taken on a pooled connection and
-# caches the outcome in a Python flag, so the lock outlives the session that
-# took it and a worker can believe it holds a lock it has handed back. The
-# threat model's weakness table carries it. Raising this number is a one-line
-# change once that is a transaction-level lock instead.
+# The queue is safe to run wide: `claim` is `FOR UPDATE SKIP LOCKED`, so N
+# workers take disjoint jobs, and the reaper election is a transaction-scoped
+# advisory lock re-taken every cycle. It was session-level and cached in a
+# Python flag until M10, which meant the flag outlived the lock and two workers
+# could both believe they were the reaper -- invisible at one worker, which is
+# why it survived to be found by a review rather than by an incident.
+#
+# One is the default because one is enough for the load measured in the README,
+# not because more would break.
 resource "aws_ecs_service" "worker" {
   name            = "${local.name}-worker"
   cluster         = aws_ecs_cluster.main.id
