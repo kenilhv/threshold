@@ -28,6 +28,7 @@ from sqlalchemy import select
 
 from threshold.adapters.extraction.port import ExtractionError
 from threshold.api import idempotency
+from threshold.api.auth import Principal, require_principal
 from threshold.api.dependencies import SessionDep, get_ingest_service
 from threshold.domain.classification import Sensitivity
 from threshold.domain.extraction import redacted_fields
@@ -316,6 +317,12 @@ async def submit_document(
 async def get_document(
     document_id: uuid.UUID,
     session: SessionDep,
+    # Unused by the body and load-bearing anyway: depending on it is what makes
+    # this route refuse an anonymous caller. It answered anybody from M1 to M9,
+    # because `require_principal` is opted into per route and a route that
+    # forgets looks exactly like one that chose not to.
+    # `test_route_authentication.py` is what stops that happening a third time.
+    _principal: Annotated[Principal, Depends(require_principal)],
 ) -> DocumentDetail:
     document = (
         await session.execute(select(Document).where(Document.id == document_id))
@@ -362,6 +369,13 @@ async def get_document(
 async def get_match(
     document_id: uuid.UUID,
     session: SessionDep,
+    # Any authenticated role may read any invoice, deliberately. The rule this
+    # system enforces is about who may *decide*, and a reviewer who cannot see
+    # an invoice they do not own cannot tell a colleague it looks wrong. What
+    # was never deliberate is that this also answered people with no role at
+    # all -- vendor, amount, every exception's free text, and since M8 the
+    # payment's state and its reference at the rail.
+    _principal: Annotated[Principal, Depends(require_principal)],
 ) -> MatchView:
     """The latest version only.
 

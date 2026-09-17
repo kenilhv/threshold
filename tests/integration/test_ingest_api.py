@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from tests.integration.databases import LIVE
+from tests.integration.test_auth import mint
 from tests.unit.test_fixture_layouts import build_spec, render
 
 from threshold.api.idempotency import remember
@@ -41,6 +42,18 @@ def client() -> Iterator[httpx.Client]:
         except httpx.ConnectError:
             pytest.skip("stack is not running; start it with `make up`")
         yield c
+
+
+@pytest.fixture
+def reader(client: httpx.Client) -> dict[str, str]:
+    """An Authorization header for the auditor: reads everything, decides nothing.
+
+    Retrieval needed no token until M9, which was a hole rather than a
+    convenience. Uploading still needs none -- suppliers are not users of this
+    system -- so these tests now say, in their own signatures, which half of the
+    ingest API is public and which is not.
+    """
+    return {"Authorization": f"Bearer {mint(client, 'auditor')}"}
 
 
 def unique_pdf(tmp_path: Path, layout: str = "continental_tabular") -> bytes:
@@ -181,7 +194,7 @@ class TestIdempotencyKey:
 
 class TestRetrieval:
     def test_the_worker_extracts_the_document_shortly_after_ingest(
-        self, client: httpx.Client, invoice_pdf: bytes
+        self, client: httpx.Client, invoice_pdf: bytes, reader: dict[str, str]
     ) -> None:
         """The end-to-end proof that the async pipeline actually closes.
 
@@ -198,7 +211,7 @@ class TestRetrieval:
         deadline = time.monotonic() + 30.0
         body: dict[str, object] = {}
         while time.monotonic() < deadline:
-            response = client.get(f"/v1/documents/{created['document_id']}")
+            response = client.get(f"/v1/documents/{created['document_id']}", headers=reader)
             assert response.status_code == 200
             body = response.json()
             if body.get("extraction_version") is not None:
@@ -218,13 +231,53 @@ class TestRetrieval:
         assert "confidence" in fields["invoice_number"]
         assert "confidence" in fields["total"]
 
-    def test_an_unknown_id_is_a_404(self, client: httpx.Client) -> None:
-        response = client.get(f"/v1/documents/{uuid.uuid4()}")
+    def test_an_unknown_id_is_a_404(self, client: httpx.Client, reader: dict[str, str]) -> None:
+        response = client.get(f"/v1/documents/{uuid.uuid4()}", headers=reader)
         assert response.status_code == 404
 
-    def test_a_malformed_id_is_a_422_not_a_500(self, client: httpx.Client) -> None:
-        response = client.get("/v1/documents/not-a-uuid")
+    def test_a_malformed_id_is_a_422_not_a_500(
+        self, client: httpx.Client, reader: dict[str, str]
+    ) -> None:
+        response = client.get("/v1/documents/not-a-uuid", headers=reader)
         assert response.status_code == 422
+
+    def test_reading_a_document_back_needs_a_token(
+        self, client: httpx.Client, invoice_pdf: bytes
+    ) -> None:
+        """The hole, as a regression test against the running API.
+
+        `test_route_authentication.py` proves the dependency is declared. This
+        proves the deployed service actually refuses -- including for a document
+        the anonymous caller has just uploaded themselves, which is the case
+        that feels like it ought to work and must not: a supplier who can read
+        back their submission can read back the vendor it resolved to and
+        whether it was blocked, which tells them what the controls caught.
+        """
+        created = client.post(
+            "/v1/documents",
+            files={"file": ("invoice.pdf", invoice_pdf, "application/pdf")},
+        ).json()
+        document_id = created["document_id"]
+
+        assert client.get(f"/v1/documents/{document_id}").status_code == 401
+        assert client.get(f"/v1/documents/{document_id}/match").status_code == 401
+
+    def test_an_unknown_id_without_a_token_is_a_401_and_not_a_404(
+        self, client: httpx.Client
+    ) -> None:
+        """Order matters. A 404 for anonymous callers would let anybody probe
+        which document ids exist; authentication is checked before existence."""
+        assert client.get(f"/v1/documents/{uuid.uuid4()}").status_code == 401
+
+    def test_uploading_still_needs_none(self, client: httpx.Client, invoice_pdf: bytes) -> None:
+        """The vacuity guard, and the deliberate half of the decision. If the
+        upload had been closed along with the reads, every test above would be
+        unreachable and the supplier-facing door would be shut by accident."""
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("invoice.pdf", invoice_pdf, "application/pdf")},
+        )
+        assert response.status_code in (200, 201, 202)
 
 
 class TestObservability:

@@ -26,6 +26,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from tests.integration.databases import LIVE
+from tests.integration.test_auth import mint
 from tests.unit.test_fixture_layouts import build_spec, render
 
 pytestmark = pytest.mark.integration
@@ -109,7 +110,11 @@ async def _submit_and_wait(client: httpx.Client, sessions: async_sessionmaker[As
         path.unlink(missing_ok=True)
 
     for _ in range(60):
-        if client.get(f"{API}/v1/documents/{document_id}/match").status_code == 200:
+        polled = client.get(
+            f"{API}/v1/documents/{document_id}/match",
+            headers={"Authorization": f"Bearer {mint(client, 'auditor')}"},
+        )
+        if polled.status_code == 200:
             break
         await asyncio.sleep(0.5)
     else:

@@ -71,7 +71,9 @@ def submit(client: httpx.Client, *, over_billed: bool) -> str:
         path.unlink(missing_ok=True)
 
     for _ in range(60):
-        match = client.get(f"{API}/v1/documents/{document_id}/match")
+        match = client.get(
+            f"{API}/v1/documents/{document_id}/match", headers=auth(client, "auditor")
+        )
         if match.status_code == 200:
             return document_id
         import time
@@ -81,7 +83,9 @@ def submit(client: httpx.Client, *, over_billed: bool) -> str:
 
 
 def match_of(client: httpx.Client, document_id: str) -> dict[str, object]:
-    response = client.get(f"{API}/v1/documents/{document_id}/match")
+    response = client.get(
+        f"{API}/v1/documents/{document_id}/match", headers=auth(client, "auditor")
+    )
     response.raise_for_status()
     body: dict[str, object] = response.json()
     return body

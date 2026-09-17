@@ -44,6 +44,12 @@ def check(ok: bool, name: str) -> None:
     print(f"  {'PASS' if ok else 'FAIL'}  {name}")
 
 
+def _bearer(client: httpx.Client, user: str) -> dict[str, str]:
+    """An Authorization header for `user`. Reads need one since M9."""
+    token, _ = mint(client, user)
+    return {"Authorization": f"Bearer {token}"}
+
+
 def mint(client: httpx.Client, user: str) -> tuple[str, dict[str, Any]]:
     r = client.post(
         TOKEN_URL,
@@ -98,7 +104,12 @@ def submit_over_billed(client: httpx.Client) -> str:
     finally:
         path.unlink(missing_ok=True)
     for _ in range(60):
-        if client.get(f"{API}/v1/documents/{doc}/match").status_code == 200:
+        if (
+            client.get(
+                f"{API}/v1/documents/{doc}/match", headers=_bearer(client, "auditor")
+            ).status_code
+            == 200
+        ):
             return doc
         time.sleep(0.5)
     raise SystemExit("worker never matched the invoice")

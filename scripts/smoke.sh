@@ -164,7 +164,7 @@ if [[ -s "$FIXTURE" ]]; then
 
   DOC_ID="$(printf '%s' "$FIRST" | python -c 'import json,sys; print(json.load(sys.stdin)["document_id"])' 2>/dev/null)"
   check "GET /v1/documents/{id} returns the extraction" "200" \
-    "$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$API/v1/documents/$DOC_ID")"
+    "$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "Authorization: Bearer $TOKEN" "$API/v1/documents/$DOC_ID")"
 
   # Reusing a key for different content must be refused, not silently replayed.
   KEY="smoke-$(date +%s)-$$"
@@ -180,7 +180,7 @@ if [[ -s "$FIXTURE" ]]; then
   # worker rather than assume the response already carries a result.
   EXTRACTED=""
   for _ in $(seq 1 40); do
-    EXTRACTED="$(curl -s --max-time 15 "$API/v1/documents/$DOC_ID" \
+    EXTRACTED="$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" "$API/v1/documents/$DOC_ID" \
       | python -c 'import json,sys; print(json.load(sys.stdin).get("extraction_version") or "")' 2>/dev/null)"
     [[ -n "$EXTRACTED" ]] && break
     sleep 0.5
@@ -207,14 +207,14 @@ if [[ -s "$FIXTURE" ]]; then
   # items or the seed and the fixture have drifted apart.
   DECISION=""
   for _ in $(seq 1 40); do
-    DECISION="$(curl -s --max-time 15 "$API/v1/documents/$DOC_ID/match" \
+    DECISION="$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" "$API/v1/documents/$DOC_ID/match" \
       | python -c 'import json,sys; print(json.load(sys.stdin).get("disposition") or "")' 2>/dev/null)"
     [[ -n "$DECISION" ]] && break
     sleep 0.5
   done
   check "the invoice was matched against its purchase order" "auto_approve" "$DECISION"
 
-  MATCH="$(curl -s --max-time 15 "$API/v1/documents/$DOC_ID/match")"
+  MATCH="$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" "$API/v1/documents/$DOC_ID/match")"
 
   check "all three line items paired with the order" "3" \
     "$(printf '%s' "$MATCH" | python -c 'import json,sys; print(len(json.load(sys.stdin)["line_pairs"]))' 2>/dev/null)"

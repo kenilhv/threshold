@@ -122,11 +122,37 @@ def await_decision(client: httpx.Client, document_id: str) -> dict[str, object]:
     """Poll. Matching is asynchronous, which is the contract, not a limitation."""
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
-        body = client.get(f"{API}/v1/documents/{document_id}/match", timeout=15)
+        body = client.get(
+            f"{API}/v1/documents/{document_id}/match", headers=_auditor(client), timeout=15
+        )
         if body.status_code == 200:
             return dict(body.json())
         time.sleep(0.4)
     raise SystemExit(f"no decision for {document_id} within 45s -- is the worker running?")
+
+
+def _auditor(client: httpx.Client) -> dict[str, str]:
+    """A bearer token for the role that may read everything and decide nothing.
+
+    Reads used to need no token at all, which was a hole rather than a
+    convenience: `GET /v1/documents/{id}/match` answered anonymous callers with
+    the vendor, the amount and the payment's state until M9. The auditor is the
+    honest identity for a script that only looks -- it cannot approve anything,
+    so a bug here cannot move money.
+    """
+    response = client.post(
+        "http://localhost:8080/realms/threshold/protocol/openid-connect/token",
+        data={
+            "grant_type": "password",
+            "client_id": "threshold-tests",
+            "client_secret": "local-tests-only",
+            "username": "auditor",
+            "password": "auditor",
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 def main() -> None:
