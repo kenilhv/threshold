@@ -1009,22 +1009,16 @@ class MatchException(Base):
         JSONB, nullable=True, info=classify(Sensitivity.INTERNAL)
     )
 
-    resolved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, info=classify(Sensitivity.PUBLIC)
-    )
-
     match_result: Mapped[MatchResult] = relationship(back_populates="exceptions")
 
     __table_args__ = (
         CheckConstraint(
             "severity in ('block', 'review', 'info')", name="ck_match_exception_severity"
         ),
-        Index(
-            "ix_match_exception_open_by_owner",
-            "owner_role",
-            "due_at",
-            postgresql_where=text("resolved_at IS NULL"),
-        ),
+        # One lookup per queue row: `WHERE match_result_id = ? ORDER BY due_at`.
+        # `match_exception` carried no index on `match_result_id` at all, so a
+        # fifty-row page was fifty sequential scans of a growing table.
+        Index("ix_match_exception_match_result", "match_result_id", "due_at"),
         Index("ix_match_exception_code", "code"),
     )
 

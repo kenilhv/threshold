@@ -173,7 +173,6 @@ async def get_queue(
             await session.execute(
                 select(MatchException.due_at)
                 .where(MatchException.match_result_id == result.id)
-                .where(MatchException.resolved_at.is_(None))
                 .order_by(MatchException.due_at)
                 .limit(1)
             )
@@ -254,10 +253,14 @@ async def decide(
     except AlreadyDecidedError as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
+            # Null rather than absent when the winner is not visible to this
+            # transaction. A client that renders "already approved by null"
+            # is showing the truth; one that renders the loser's own name,
+            # which is what this used to send, is not.
             {
                 "detail": str(exc),
-                "decision": exc.existing.decision,
-                "actor": exc.existing.actor_label,
+                "decision": exc.existing.decision if exc.existing else None,
+                "actor": exc.existing.actor_label if exc.existing else None,
             },
         ) from exc
     except NotPermittedError as exc:

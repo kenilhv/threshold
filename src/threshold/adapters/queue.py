@@ -58,11 +58,11 @@ log = structlog.get_logger(__name__)
 #: a column would be queryable and would keep the payload purely business data
 #: -- and the right one here. A column needs a migration, a `ClaimedJob` field,
 #: an entry in claim()'s RETURNING list, an explicit copy in fail() and a
-#: decision in replay(); this repository already contains proof that such copy
-#: paths get missed, because `DeadLetter.dedupe_key` is declared and nothing has
-#: ever written it. The payload needs none of that: it survives dead-lettering
-#: and replay because fail() copies it verbatim, and a handler that has never
-#: heard of these keys ignores them.
+#: decision in replay(); this repository contained proof that such copy paths
+#: get missed, because `DeadLetter.dedupe_key` was declared at M2 and nothing
+#: wrote it until M8 -- five files, exactly as predicted here. The payload needs
+#: none of that: it survives dead-lettering and replay because fail() copies it
+#: verbatim, and a handler that has never heard of these keys ignores them.
 #:
 #: Underscore-prefixed because they are transport metadata, not business data.
 TRACEPARENT_KEY: Final = "_traceparent"
@@ -98,6 +98,11 @@ class ClaimedJob:
     attempts: int
     max_attempts: int
     lease_expires_at: datetime
+    #: What this job was deduplicated on, carried so that dying with it is not
+    #: the same as losing it. `fail` copies it onto the dead letter and
+    #: `replay_dead_letter` puts it back, which is the only reason a replayed
+    #: job can be suppressed as a duplicate.
+    dedupe_key: str | None
     #: How long this job sat claimable before anyone took it.
     #:
     #: Computed by the database inside the claim, as ``now() - run_after``, and
@@ -307,6 +312,7 @@ class PostgresJobQueue:
                 Job.attempts,
                 Job.max_attempts,
                 Job.lease_expires_at,
+                Job.dedupe_key,
                 Job.run_after,
                 Job.created_at,
                 # The wait, measured by the one clock that governs the claim.
@@ -328,6 +334,7 @@ class PostgresJobQueue:
                 attempts=r.attempts,
                 max_attempts=r.max_attempts,
                 lease_expires_at=r.lease_expires_at,
+                dedupe_key=r.dedupe_key,
                 waited=r.waited,
             )
             for r in rows
@@ -416,6 +423,7 @@ class PostgresJobQueue:
                 kind=job.kind,
                 payload=job.payload,
                 attempts=job.attempts,
+                dedupe_key=job.dedupe_key,
                 final_error=error[:4000],
                 failure_kind="permanent" if permanent else "transient",
             )
@@ -500,14 +508,40 @@ class PostgresJobQueue:
         if died_in is not None:
             payload[LINKED_TRACEPARENT_KEY] = died_in
 
+        # The key goes back on, which is the whole reason the column exists.
+        #
+        # It used to pass None, reasoning that "a replay is an explicit human
+        # decision to run this again". That is true of one letter and false of
+        # `queuectl replay --all`, which is already shipped: two letters can
+        # share a key -- job A dies with `extract:{digest}`, the key frees
+        # because the partial index only covers pending and claimed, a producer
+        # enqueues B with the same key, B dies too -- and replaying both then
+        # runs the same work twice. On the extract path that is a second model
+        # call and a spurious extraction version; nothing downstream refuses it.
         job_id = await self.enqueue(
             session,
             kind=JobKind(letter.kind),
             payload=payload,
-            # Deliberately no dedupe key: the original may still hold it, and a
-            # replay is an explicit human decision to run this again.
-            dedupe_key=None,
+            dedupe_key=letter.dedupe_key,
         )
+
+        # Only a replay that produced a job counts as replayed.
+        #
+        # This guard is unreachable until the line above passes a real key, and
+        # is written with it rather than after it: `enqueue` returns None when
+        # the partial index suppresses the insert, and marking the letter anyway
+        # would drop it out of `ix_dead_letter_unreplayed`, out of the
+        # `dead_letters_unreplayed` gauge and out of the DeadLettersUnreplayed
+        # alert -- an operator's to-do item deleted by the act of failing to
+        # act on it.
+        if job_id is None:
+            log.info(
+                "queue.replay_suppressed",
+                dead_letter_id=str(dead_letter_id),
+                dedupe_key=letter.dedupe_key,
+            )
+            return None
+
         letter.replayed_at = func.now()  # database clock, like everything else here
         log.info("queue.replayed", dead_letter_id=str(dead_letter_id), job_id=str(job_id))
         return job_id

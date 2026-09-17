@@ -48,6 +48,11 @@ from threshold.services.audit import Actor, record
 
 log = structlog.get_logger(__name__)
 
+#: The decisions `uq_approval_decision_terminal` is scoped to, as the strings
+#: the column holds. Derived from `TERMINAL` rather than written out, so a
+#: fifth decision added to the enum cannot make this quietly incomplete.
+TERMINAL_VALUES: Final[frozenset[str]] = frozenset(d.value for d in TERMINAL)
+
 
 class ApprovalError(RuntimeError):
     """Base for refusals that are the caller's to resolve."""
@@ -70,11 +75,31 @@ class StaleEvidenceError(ApprovalError):
 
 
 class AlreadyDecidedError(ApprovalError):
-    def __init__(self, existing: ApprovalDecision) -> None:
-        super().__init__(
-            f"this invoice was already {existing.decision} by "
-            f"{existing.actor_label or existing.actor_type}"
-        )
+    """Somebody else decided this invoice first.
+
+    ``existing`` is the decision that won, when this transaction can see it --
+    which is the ordinary case, because the database runs READ COMMITTED and a
+    statement issued after the conflict takes a fresh snapshot.
+
+    It is ``None`` only when the caller holds a snapshot older than the winning
+    commit, under REPEATABLE READ or tighter. Then the refusal can still say
+    *that* the invoice was decided, because the unique index just said so, and
+    cannot say by whom. Saying so is the point: the version this replaced passed
+    the loser's own uncommitted row and confidently reported the wrong verb and
+    the wrong name.
+    """
+
+    def __init__(self, existing: ApprovalDecision | None) -> None:
+        if existing is None:
+            super().__init__(
+                "this invoice was already decided by somebody else, and this "
+                "transaction's snapshot predates their decision, so it cannot say who"
+            )
+        else:
+            super().__init__(
+                f"this invoice was already {existing.decision} by "
+                f"{existing.actor_label or existing.actor_type}"
+            )
         self.existing = existing
 
 
@@ -190,7 +215,7 @@ class ApprovalService:
             await session.execute(
                 select(ApprovalDecision)
                 .where(ApprovalDecision.match_result_id == result.id)
-                .where(ApprovalDecision.decision.in_([d.value for d in TERMINAL]))
+                .where(ApprovalDecision.decision.in_(TERMINAL_VALUES))
             )
         ).scalar_one_or_none()
         if existing is not None:
@@ -224,13 +249,33 @@ class ApprovalService:
             reason=(request.reason or "").strip(),
             overrode=[code.value for code in authorisation.overrides],
         )
-        session.add(decision)
+        # A savepoint, so losing the race is recoverable rather than terminal.
+        #
+        # Without it the IntegrityError poisons the session and the only row
+        # available to describe the conflict is `decision` -- the one that just
+        # failed to insert. That is the loser's own row, so the refusal read
+        # "this invoice was already rejected by <the person being refused>"
+        # when it had in fact been approved by somebody else. Both the verb and
+        # the name were wrong, in a message about whether money moves.
         try:
-            await session.flush()
+            async with session.begin_nested():
+                session.add(decision)
+                await session.flush()
         except IntegrityError as exc:
             # Lost the race between the check above and this write. The database
-            # is the arbiter, not the read.
-            raise AlreadyDecidedError(decision) from exc
+            # is the arbiter, not the read -- so ask it who won.
+            winner = (
+                await session.execute(
+                    select(ApprovalDecision)
+                    .where(ApprovalDecision.match_result_id == result.id)
+                    .where(ApprovalDecision.decision.in_(TERMINAL_VALUES))
+                )
+            ).scalar_one_or_none()
+            # `winner` is None when this transaction's snapshot predates the
+            # commit that beat it. The refusal is still correct -- the index has
+            # just proved a terminal decision exists -- and `AlreadyDecidedError`
+            # says it cannot name one rather than naming the wrong one.
+            raise AlreadyDecidedError(winner) from exc
 
         await record(
             session,
@@ -274,9 +319,7 @@ class ApprovalService:
                     MatchException.code,
                     MatchException.severity,
                     MatchException.owner_role,
-                )
-                .where(MatchException.match_result_id == match_result_id)
-                .where(MatchException.resolved_at.is_(None))
+                ).where(MatchException.match_result_id == match_result_id)
             )
         ).all()
         return [

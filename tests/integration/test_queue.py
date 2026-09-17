@@ -489,6 +489,178 @@ class TestReplay:
             assert await queue.replay_dead_letter(s, letter_id) is None
 
 
+class TestTheDeadLetterRemembersItsKey:
+    """`DeadLetter.dedupe_key` was declared at M2 and written by nothing until M8.
+
+    `queue.py`'s own module docstring cited it as proof that hand-copied columns
+    get missed -- five places to change, and one of them was forgotten for six
+    milestones. These are the tests that make the copy path load-bearing rather
+    than hopeful.
+    """
+
+    async def test_a_dying_job_takes_its_key_with_it(
+        self, session: AsyncSession, queue: PostgresJobQueue
+    ) -> None:
+        await queue.enqueue(
+            session,
+            kind=JobKind.EXTRACT_DOCUMENT,
+            payload={"document_id": str(uuid.uuid4())},
+            dedupe_key="extract:abc123",
+        )
+        await session.commit()
+
+        [job] = await queue.claim(session, worker_id="w", limit=1)
+        assert job.dedupe_key == "extract:abc123", "the claim did not return the key"
+
+        await queue.fail(session, job, worker_id="w", error="unreadable", permanent=True)
+        await session.commit()
+
+        letter = (
+            await session.execute(select(DeadLetter).where(DeadLetter.original_job_id == job.id))
+        ).scalar_one()
+        assert letter.dedupe_key == "extract:abc123"
+
+    async def test_replaying_puts_the_key_back(
+        self, session: AsyncSession, queue: PostgresJobQueue
+    ) -> None:
+        """Without this a replayed job is undeduplicated, which is how the same
+        work runs twice."""
+        await queue.enqueue(
+            session,
+            kind=JobKind.EXTRACT_DOCUMENT,
+            payload={"document_id": str(uuid.uuid4())},
+            dedupe_key="extract:replayed",
+        )
+        await session.commit()
+        [job] = await queue.claim(session, worker_id="w", limit=1)
+        await queue.fail(session, job, worker_id="w", error="nope", permanent=True)
+        await session.commit()
+
+        letter = (
+            await session.execute(select(DeadLetter).where(DeadLetter.original_job_id == job.id))
+        ).scalar_one()
+        replayed = await queue.replay_dead_letter(session, letter.id)
+        await session.commit()
+
+        assert replayed is not None
+        revived = (await session.execute(select(Job).where(Job.id == replayed))).scalar_one()
+        assert revived.dedupe_key == "extract:replayed"
+
+    async def test_two_letters_sharing_a_key_replay_to_one_job(
+        self, session: AsyncSession, queue: PostgresJobQueue
+    ) -> None:
+        """The case `queuectl replay --all` can actually produce.
+
+        A key is unique only among `pending` and `claimed` jobs (D-009), so once
+        job A dies its key is free and a producer can enqueue B with the same
+        one. If B dies too there are two letters for one piece of work, and
+        replaying both used to run it twice -- each replay passed
+        `dedupe_key=None`, so the partial index had nothing to refuse.
+        """
+        letters = []
+        for _ in range(2):
+            await queue.enqueue(
+                session,
+                kind=JobKind.EXTRACT_DOCUMENT,
+                payload={"document_id": str(uuid.uuid4())},
+                dedupe_key="extract:shared",
+            )
+            await session.commit()
+            [job] = await queue.claim(session, worker_id="w", limit=1)
+            await queue.fail(session, job, worker_id="w", error="nope", permanent=True)
+            await session.commit()
+            letters.append(
+                (
+                    await session.execute(
+                        select(DeadLetter).where(DeadLetter.original_job_id == job.id)
+                    )
+                ).scalar_one()
+            )
+
+        first = await queue.replay_dead_letter(session, letters[0].id)
+        second = await queue.replay_dead_letter(session, letters[1].id)
+        await session.commit()
+
+        assert first is not None, "the first replay should have produced a job"
+        assert second is None, "the second replay ran the same work again"
+
+        live = (
+            await session.execute(
+                select(func.count())
+                .select_from(Job)
+                .where(Job.dedupe_key == "extract:shared")
+                .where(Job.state.in_(["pending", "claimed"]))
+            )
+        ).scalar_one()
+        assert live == 1
+
+    async def test_a_suppressed_replay_stays_on_the_operator_s_list(
+        self, session: AsyncSession, queue: PostgresJobQueue
+    ) -> None:
+        """The landmine that populating the key would otherwise have armed.
+
+        `replay_dead_letter` used to set `replayed_at` unconditionally, which was
+        unreachable while it passed `dedupe_key=None` -- the insert always
+        returned an id. The moment a real key is passed, a suppressed replay
+        would mark the letter done having created no job, dropping it out of
+        `ix_dead_letter_unreplayed`, out of the `dead_letters_unreplayed` gauge
+        and out of the DeadLettersUnreplayed alert. An operator's to-do item
+        deleted by the act of failing to act on it.
+        """
+        letters = []
+        for _ in range(2):
+            await queue.enqueue(
+                session,
+                kind=JobKind.EXTRACT_DOCUMENT,
+                payload={"document_id": str(uuid.uuid4())},
+                dedupe_key="extract:suppressed",
+            )
+            await session.commit()
+            [job] = await queue.claim(session, worker_id="w", limit=1)
+            await queue.fail(session, job, worker_id="w", error="nope", permanent=True)
+            await session.commit()
+            letters.append(
+                (
+                    await session.execute(
+                        select(DeadLetter).where(DeadLetter.original_job_id == job.id)
+                    )
+                ).scalar_one()
+            )
+
+        await queue.replay_dead_letter(session, letters[0].id)
+        assert await queue.replay_dead_letter(session, letters[1].id) is None
+        await session.commit()
+
+        await session.refresh(letters[1])
+        assert letters[1].replayed_at is None, (
+            "a replay that produced no job marked the letter done, so nothing "
+            "will ever show it to an operator again"
+        )
+
+    async def test_a_job_with_no_key_still_dies_and_replays(
+        self, session: AsyncSession, queue: PostgresJobQueue
+    ) -> None:
+        """The vacuity guard. Most jobs carry no key at all, and copying a null
+        must stay a no-op rather than becoming a crash."""
+        await queue.enqueue(
+            session,
+            kind=JobKind.EXTRACT_DOCUMENT,
+            payload={"document_id": str(uuid.uuid4())},
+            dedupe_key=None,
+        )
+        await session.commit()
+        [job] = await queue.claim(session, worker_id="w", limit=1)
+        assert job.dedupe_key is None
+        await queue.fail(session, job, worker_id="w", error="nope", permanent=True)
+        await session.commit()
+
+        letter = (
+            await session.execute(select(DeadLetter).where(DeadLetter.original_job_id == job.id))
+        ).scalar_one()
+        assert letter.dedupe_key is None
+        assert await queue.replay_dead_letter(session, letter.id) is not None
+
+
 class TestBackoffSchedule:
     def test_it_grows_and_then_stops_growing(self) -> None:
         delays = [backoff_for(n) for n in range(1, 12)]
