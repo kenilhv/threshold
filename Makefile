@@ -136,7 +136,7 @@ check-console: ## Drive the console as a clerk and a buyer, and check what it re
 	@python scripts/check_console.py
 
 .PHONY: demo-match
-demo-match: ## Three invoices, three decisions, and the reason for each
+demo-match: ## Four invoices, four decisions, and the reason for each
 	@python scripts/demo_three_way_match.py
 
 .PHONY: eval

@@ -7,20 +7,33 @@ The name is the argument. The system's entire job is to hold a defensible line
 between what a machine may execute alone and what a human must decide, and to
 show where that line is and why it sits there.
 
-> **Status: M4.** A PDF ingests, a worker extracts it and matches it against
-> its purchase order and the goods received, and then one of two things
-> happens. Either nothing went wrong and the system records its own approval,
-> or the invoice waits in a queue for the person who owns what did — and
-> anyone else who opens it sees the reason in place of the button.
+> **Status: M8 of ten.** An invoice goes the whole way: it arrives, it is read,
+> it is matched against its purchase order and the goods received, and then one
+> of three things happens. It clears every check and the system records its own
+> approval. Or something disagrees and it waits in a queue for the person who
+> owns that particular problem. Either way, once approved it is paid — once,
+> idempotently — and the money is written into a double-entry ledger Postgres
+> will not let you unbalance.
 >
-> `make demo-match` submits four invoices: one approves itself, one blocks on
-> price and goes to the buyer, one goes to receiving because nothing has
-> arrived, and one, arithmetically perfect, blocks to treasury because it asks
-> to be paid into an account this vendor has never used. The console at
-> <http://localhost:3000> is where those three get decided.
+> Sprints M0 through M8 are done. M9 (row-level security, pseudonymisation, a
+> written threat model) and M10 (Terraform, load test) are not started, and the
+> roadmap below says what each would be rather than only naming it.
 >
-> The milestones below are honest about what does not exist yet. Every claim
-> in this README is checkable against the repository.
+> **To see it working**, in order:
+>
+> ```bash
+> make up          # the whole stack, waits until each part is actually serving
+> make demo-match  # four invoices, four different outcomes, with the reason for each
+> make smoke       # 41 checks against the running system, end to end
+> ```
+>
+> Then open <http://localhost:3000> and sign in as `buyer` / `buyer`. The front
+> page explains the system before asking you to log in; the queue is what a
+> reviewer actually works. `make demo-match`'s blocked invoices are mostly price
+> disputes, which is why `buyer` is the account to start with.
+>
+> Every claim in this README is checkable against the repository. Where a number
+> appears it was measured, and where something does not exist it says so.
 
 ---
 
@@ -181,6 +194,31 @@ Full reasoning, including what is deliberately *not* distributed and why:
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
+
+## Where things are
+
+```
+src/threshold/
+  domain/       the decisions, as pure functions — no database, no clock, no model
+  services/     the same decisions, once they need a database
+  adapters/     the outside world behind ports: extraction, queue, object store,
+                payment rail, triage agent — each with a tier that needs nothing
+  api/          FastAPI routes
+  workers/      the job runtime and one handler per job kind
+  observability/ the metric registry every dashboard and alert is checked against
+console/        the operator console (Next.js, back-end for front-end)
+evals/          the extraction evaluation harness and its committed baseline
+migrations/     Alembic, 8 revisions, each reversible and proved so
+infra/local/    compose, the Keycloak realm, Prometheus rules, the Grafana dashboard
+docs/           ARCHITECTURE.md, DECISIONS.md (34 records), 7 runbooks
+tests/unit/     690 tests, no stack required
+tests/integration/  161 tests, requires `make up`
+```
+
+The split that matters is `domain/` against everything else. A rule in `domain/`
+takes values and returns values, so every case it handles is a row in a table
+test. The moment a decision needs a database it moves to `services/`, and the
+reason is stated where it happens rather than implied.
 
 ## Built so far
 
