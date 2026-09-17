@@ -347,7 +347,16 @@ fi
 # The rules are loaded, not merely written. A rules file with a typo in a
 # path is a file Prometheus never reads, and it says so once at startup and
 # then never again.
-check "the alert rules are loaded" "9" \
+# Counted from the file rather than hardcoded, for the reason stated at the
+# top of this script -- which this check then ignored, and which cost it. It
+# asserted "9" from M5 until an eleventh rule was added, at which point the
+# smoke test failed for being out of date rather than for anything being
+# wrong: the loudest possible way to teach somebody to stop reading it.
+#
+# The file declares the rules; Prometheus is asked whether it loaded that
+# many. Neither number is written here.
+DECLARED_ALERTS="$(grep -c '^[[:space:]]*- alert:' infra/local/prometheus/alerts.yml)"
+check "every declared alert rule is loaded" "$DECLARED_ALERTS" \
   "$(curl -s --max-time 10 "$PROM/api/v1/rules" | python -c 'import json,sys; print(sum(len(g["rules"]) for g in json.load(sys.stdin)["data"]["groups"]))' 2>/dev/null)"
 
 # No rule may be in `unknown` or `err` state: a rule whose expression fails
