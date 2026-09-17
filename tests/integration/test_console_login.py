@@ -147,11 +147,13 @@ def _follow_within(browser: Browser, url: str, host: str, *, hops: int = 5) -> h
     raise AssertionError(f"more than {hops} redirects on {host}")
 
 
-def sign_in(browser: Browser, *, user: str = "buyer", start: str = "/") -> httpx.Response:
+def sign_in(browser: Browser, *, user: str = "buyer", start: str = "/queue") -> httpx.Response:
     """Drive the whole flow and return the console's *callback* response, unfollowed.
 
-    ``start`` is the page the person first opened. Whatever it was, the callback
-    is supposed to send them back to it.
+    ``start`` is the protected page the person first opened. Whatever it was,
+    the callback is supposed to send them back to it. It defaults to the queue
+    rather than ``/`` because ``/`` is a public page that explains the project
+    and does not bounce anybody anywhere.
     """
     first = browser.get(f"{CONSOLE}{start}")
     login_url = _location(first)
@@ -222,7 +224,7 @@ class TestSigningInBringsYouBackToTheConsole:
         redirect sent back *from* the callback has to name the same host. If the
         two ever diverge, this test is comparing the wrong thing and says so.
         """
-        first = browser.get(f"{CONSOLE}/")
+        first = browser.get(f"{CONSOLE}/queue")
         to_keycloak = browser.get(_location(first))
         auth_url = _location(to_keycloak)
         inbound = parse_qs(urlparse(auth_url).query)["redirect_uri"][0]
@@ -244,7 +246,7 @@ class TestTheCallbackDefendsItself:
         console origin as well -- an error page a person cannot reach is an
         error nobody reports.
         """
-        first = browser.get(f"{CONSOLE}/")
+        first = browser.get(f"{CONSOLE}/queue")
         to_keycloak = browser.get(_location(first))
         auth_url = _location(to_keycloak)
         page = _follow_within(browser, auth_url, urlparse(KEYCLOAK).netloc)
@@ -263,3 +265,34 @@ class TestTheCallbackDefendsItself:
         assert urlparse(location).netloc == urlparse(CONSOLE).netloc, location
         assert "error=state" in location, location
         assert not browser.holds("threshold_session"), "a forged callback minted a session"
+
+
+class TestTheFrontDoorExplainsItself:
+    """`/` used to redirect straight to Keycloak.
+
+    The first thing anyone saw of this project was a login form belonging to a
+    different product, with no statement of what they were signing in to. These
+    assert the replacement is actually reachable and actually says something --
+    a landing page that 302s, or that renders an empty shell, would be the same
+    bug with more files.
+    """
+
+    def test_the_landing_page_is_public(self, browser: Browser) -> None:
+        response = browser.get(f"{CONSOLE}/")
+        assert response.status_code == 200, (
+            f"the front door redirects ({response.status_code}); a visitor still cannot "
+            "learn what this is without an account"
+        )
+
+    def test_it_says_what_the_system_does_and_offers_the_door(self, browser: Browser) -> None:
+        body = browser.get(f"{CONSOLE}/").text
+        assert "purchase order" in body, "the landing page never says what is being checked"
+        assert "/api/auth/login" in body, "the landing page offers no way in"
+
+    def test_protected_pages_are_still_protected(self, browser: Browser) -> None:
+        """The vacuity guard. Making the front door public must not have made
+        anything else public with it."""
+        for path in ("/queue", f"/invoice/{uuid.uuid4()}"):
+            response = browser.get(f"{CONSOLE}{path}")
+            assert response.status_code in (302, 303, 307, 308), f"{path} served without a session"
+            assert urlparse(_location(response)).path == "/api/auth/login", path

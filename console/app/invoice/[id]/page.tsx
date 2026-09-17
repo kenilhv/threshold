@@ -27,6 +27,23 @@ import { readSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * The three outcomes, said plainly.
+ *
+ * `blocked` is the one worth spelling out: it does not mean the invoice is
+ * fraudulent or that anything is broken. It means the rules found a
+ * disagreement they are not allowed to resolve on their own, which is the
+ * system working rather than failing.
+ */
+const DISPOSITIONS: Record<string, string> = {
+  blocked:
+    "The rules found something they will not clear on their own. Somebody who owns the problem has to decide. Nothing is wrong with the system — this is it working.",
+  needs_review:
+    "Nothing here stops the payment outright, but something is worth a person's eyes before it goes.",
+  auto_approve:
+    "Every check agreed, so the system approved this itself and recorded that it did. No person was involved.",
+};
+
 function ownersOf(match: MatchView): string[] {
   return [...new Set(match.exceptions.map((e) => e.owner_role))].sort();
 }
@@ -95,6 +112,10 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
             {match.disposition.replace(/_/g, " ")}
           </span>
         </h3>
+        {/* What the badge above actually means, in words. A reviewer who has to
+            learn the vocabulary before they can read the screen will guess
+            instead, and the guess for "blocked" is usually "broken". */}
+        <p className="meta">{DISPOSITIONS[match.disposition] ?? match.disposition}</p>
 
         {match.exceptions.length === 0 && (
           <p className="meta">No exceptions were raised.</p>
