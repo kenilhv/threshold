@@ -81,6 +81,39 @@ jobs:
         # a deploy into an outage, and it is invisible until someone deploys.
         run: python scripts/check_migration_graph.py
 
+  terraform:
+    # The deployment description, checked and never applied. `terraform
+    # validate` says the configuration is well-formed and internally consistent;
+    # it does not say AWS would accept it, and infra/aws/README.md does not
+    # claim otherwise. Applying it would cost money to host a demo nobody
+    # visits, and would prove less than the interface that makes moving there a
+    # configuration change.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: infra/aws
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          # The version `make tf-validate` pins in its container, so a passing
+          # gate here means the same Terraform a developer ran locally.
+          terraform_version: "1.9.8"
+
+      - name: Formatting
+        run: terraform fmt -check -diff
+
+      # -backend=false: there is no state to talk to, and a module should not
+      # carry a backend anyway -- that belongs to the environment that owns it.
+      - name: Init
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate
+
   console:
     # The only TypeScript in the repository, and until this job it was checked
     # by nothing. Its own `lint` script had been broken from the start: it
