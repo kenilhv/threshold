@@ -97,6 +97,28 @@ def _job_context(payload: dict[str, Any]) -> tuple[Context | None, list[Link]]:
     return None, []
 
 
+#: SQLSTATE for insufficient_privilege.
+_INSUFFICIENT_PRIVILEGE = "42501"
+
+
+def _refused_by_privilege(exc: BaseException) -> bool:
+    """Whether Postgres refused this for lack of a grant, however it was wrapped.
+
+    SQLAlchemy raises `ProgrammingError`, whose `orig` is the driver's adapter,
+    whose cause is asyncpg's `InsufficientPrivilegeError`. Which layer carries
+    the code has changed between releases, so every link is asked.
+    """
+    seen: set[int] = set()
+    link: BaseException | None = exc
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        for attribute in ("sqlstate", "pgcode"):
+            if getattr(link, attribute, None) == _INSUFFICIENT_PRIVILEGE:
+                return True
+        link = getattr(link, "orig", None) or link.__cause__ or link.__context__
+    return False
+
+
 def _outcome_of(dead_lettered: bool) -> JobOutcome:
     """A failure that will be retried and one that has given up are different.
 
@@ -277,6 +299,23 @@ class WorkerRuntime:
             bound.info("worker.job_failed_transiently", error=str(exc))
 
         except Exception as exc:
+            if _refused_by_privilege(exc):
+                # SQLSTATE 42501 could not happen while the application was a
+                # superuser, so nothing classified it and it fell through to
+                # "transient" below: every job of the affected kind waited out
+                # its whole backoff, three times, to be refused identically.
+                # A missing grant does not heal between attempts. It is fixed by
+                # a migration, after which `make replay` brings these back.
+                message = (
+                    f"refused by Postgres for lack of privilege (42501): {exc}. The role this "
+                    "worker connects as was not granted something its handler needs; that is "
+                    "fixed in a migration, not by retrying."
+                )
+                dead = await self._settle_failure(job, message, permanent=True)
+                self._record(job, _outcome_of(dead), started)
+                bound.critical("worker.job_refused_by_database", error=str(exc))
+                return
+
             # Unclassified. Treated as transient because an unexpected exception
             # is more often a bug in the handler than a poison payload, and the
             # attempt budget bounds the cost of guessing wrong.

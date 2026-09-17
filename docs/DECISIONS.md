@@ -5,6 +5,196 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-034 — The application is not a superuser, and what that does and does not buy
+
+**Date:** 2026-09-17 · **Status:** accepted
+
+From the first commit until M9 every process in this system connected to
+Postgres as `threshold`. That is the role `POSTGRES_USER` creates: the bootstrap
+superuser, and the owner of every table. Nobody chose it. It is what the
+container gives you, and it worked.
+
+It meant two things that contradict claims this repository makes elsewhere.
+
+**The triggers were advisory.** `audit_event` is append-only because a trigger
+raises, and the ledger balances because a deferred constraint trigger raises.
+A superuser, and an owner, may `ALTER TABLE ... DISABLE TRIGGER ALL`. So the
+role those triggers constrained could switch them off in one statement. They
+held against a bug and not against a compromise.
+
+**Row-level security, the next planned increment, would have been inert.**
+Superusers bypass it unconditionally and owners bypass it unless forced.
+Verified on a scratch table before any policy was written.
+
+### The split
+
+`threshold_app` is `LOGIN` and nothing else: not superuser, not `BYPASSRLS`, no
+`CREATEROLE`, owns nothing, member of nothing. The API and the worker connect as
+it. `threshold` remains the owner and is held by exactly two containers,
+`migrate` and `seed`, both of which exit.
+
+The compose anchor defaults to the restricted role on purpose: a service that
+forgets to override its database URL gets the identity that can do least.
+
+### The grants are the append-only rules, a second time
+
+| Tables | Privileges |
+|---|---|
+| `audit_event`, `ledger_transaction`, `ledger_entry`, `approval_decision`, `extraction`, `match_result`, `match_exception`, `escalation`, `document`, `idempotency_key` | `SELECT`, `INSERT` |
+| `payment`, `dead_letter` | `SELECT`, `INSERT`, `UPDATE` on named columns |
+| `job` | the same, plus `DELETE` for the purge of finished work |
+| `vendor`, `vendor_bank_account`, `purchase_order`, `purchase_order_line`, `goods_receipt`, `goods_receipt_line` | `SELECT` |
+| `alembic_version`, `money_example` | none |
+
+There is deliberately no `ALTER DEFAULT PRIVILEGES`. A table added next month is
+unusable by the application until a migration grants on it, and
+`test_least_privilege.py` fails until somebody adds it to the policy map. A
+default would make that decision silently and in the permissive direction.
+
+The policy map lives in the test rather than being imported from the migration.
+A migration is history; the table added next month is granted in *its*
+migration, and the map is where the present is written down. A database-free
+half of the same check runs in `make verify`, because CI has no Postgres and the
+failure would otherwise first appear as a worker error on somebody's laptop.
+
+### The first version was attacked, and lost
+
+Migration 0010 granted table-wide `UPDATE` on the three tables whose rows have a
+lifecycle. Before committing it, three reviewers were given a connection as
+`threshold_app` to a scratch copy of the schema and told to assume the
+application was fully compromised; a second set re-ran every finding rated high
+or above, with instructions to default to "does not reproduce".
+
+Privilege escalation found nothing: disabling a trigger by `ALTER TABLE` or by
+`session_replication_role`, `SET ROLE`, altering itself, creating objects,
+`COPY ... PROGRAM`, `pg_read_file`, reading `pg_authid`, `TRUNCATE` -- all
+refused. That reviewer's structured report was lost to a tooling failure and
+its verifier, handed a placeholder, correctly declined to vouch for it; the
+statements are recoverable from its transcript, and each is now executed by
+`test_least_privilege.py`, which is the evidence this paragraph rests on.
+
+Abuse of the privileges it *did* hold found this, and all of it reproduced:
+
+```sql
+UPDATE payment SET amount_minor = 5000000,
+                   vendor_bank_account_id = '<another vendor's account>'
+ WHERE state = 'pending';                                        -- UPDATE 1
+UPDATE payment SET state = 'pending', settled_at = NULL          -- UPDATE 1
+ WHERE state = 'settled';
+```
+
+Remittance redirection after authorisation and before submission, which is the
+fraud this system exists to prevent, using one grant. The grant was too wide by
+twelve columns of eighteen: the executor writes `state`, `submitted_at`, `settled_at`,
+`rail_attempts`, `rail_reference` and `failure_reason`, and has never written the
+others after the insert. "Rows with a lifecycle" was the right reason and the
+wrong granularity. A payment's *state* has a lifecycle. Its amount and payee do
+not.
+
+Migration 0011 therefore does three things.
+
+- **Column-level `UPDATE`** on `payment`, `job` and `dead_letter`: how far along
+  a row is, and nothing about what it is.
+- **`trg_payment_moves_legally`**: `ALLOWED` from `domain/payments.py`, in
+  Postgres. `settled` and `failed` are frozen. The identity columns are compared
+  too, so the immutability binds the owner and can be tested as the owner -- the
+  same two-lock shape as `audit_event`.
+- **`trg_payment_agrees_with_its_authorisation`**: a payment is born `pending`,
+  cites an approving decision, carries the amount, currency, document and vendor
+  of the match result that decision was taken on, and pays that vendor's current
+  account. `PaymentService._create` derives every one of those, and a row that
+  skipped the service used to skip all of them.
+
+The transition table and the set of paying decisions now exist twice, in two
+languages. Nothing but a test can keep them the same, so
+`test_payment_integrity.py` attempts all twenty-five (from, to) pairs and every
+`Decision` value against the database and compares the answers with the domain's
+own dictionaries. Thirteen mutations of the two trigger functions and fourteen
+of the grants were each killed by at least one test.
+
+Freezing settled rows immediately caught the service itself: it set `settled_at`
+*after* the transition had flushed, a second `UPDATE` against a row already
+`settled`. The timestamps now travel in the same statement as the state.
+
+### A bug that had nothing to do with an attacker
+
+Reading the executor to write the trigger showed that `PaymentService._create`
+never asked what had been decided. `_request_payment` only enqueues for an
+approving decision, and that was the only place the question was asked -- on the
+way *into* the queue. The executor paid whatever decision id its job carried. A
+test handed it a buyer's rejection and it created the payment.
+
+It now refuses, the set of paying decisions moved to the domain so both ends
+read one definition, and the trigger refuses independently. The guard belongs at
+the end that moves money, whatever the other end does.
+
+### What a compromised application can still do
+
+This section exists so that nobody infers more than was built.
+
+The application holds `INSERT` on `match_result` and `approval_decision`,
+because inserting them is its job. A compromised application can therefore forge
+a consistent chain from the root -- a match result, a decision approving it, a
+payment -- and every check above passes, because each row agrees with the rows it
+cites. The reviewers did exactly this and drove the real executor to `settled`.
+The database has no independent knowledge of what the invoice said or of who
+clicked approve.
+
+It can also post ledger transactions that balance and describe nothing, enqueue
+an `execute_payment` job by hand, and insert audit rows naming a real user.
+Append-only gives non-erasure. It does not give authenticity, and the forged rows
+are as permanent as the honest ones.
+
+What bounds the money: `vendor_bank_account` is `SELECT`-only, and a payment's
+payee must be the current account of the vendor on the purchase order its match
+result cites. The forged chain can overpay a vendor already on file, into that
+vendor's own account. It cannot pay a stranger, because it cannot introduce one.
+The amount is not bounded.
+
+One proposed fix was rejected: refusing any approval while a blocking exception
+is open. That is the designed path here -- the owner of an exception approving
+the invoice it blocks is what `authorise()` exists to permit.
+
+The next increment narrows this by splitting the role in two, so that the process
+which parses hostile supplier documents cannot write a human's decision, with
+policies keyed on `current_user` rather than on a setting the application could
+change. Policies keyed on an application-set value are worth having as a second
+lock against bugs, and will be described as that.
+
+### Operational consequences, found the same way
+
+- **Reaching Postgres is not being allowed to use it.** `/readyz` ran `SELECT 1`,
+  which needs no grant; a schema restored without its ACLs reported ready for
+  ever above a worker that could claim nothing. It now asks for the grants the
+  process needs, one privilege at a time -- `has_table_privilege(r, t,
+  'SELECT,INSERT')` is true if *either* is held, verified on the read-only
+  `vendor` table -- and reports a role that outranks its grants, which gates
+  routing outside local and CI.
+- **42501 is permanent.** It could not occur under a superuser, so nothing
+  classified it and it was retried as transient. It is now dead-lettered on the
+  first attempt with a message that says the fix is a migration.
+- **The role's password.** The role is cluster-wide and the migration runs per
+  database, so `CREATE ROLE` is guarded -- and the first version therefore let
+  whichever database migrated first fix the password, silently ignoring the
+  variable afterwards. An explicitly configured password is now always applied;
+  the default never overwrites one.
+- **Loopback is `trust` inside the Postgres container.** Two smoke checks
+  connected that way and passed with any password. They now run from the API
+  container, over the network, with the credential the process actually holds.
+
+### Known limits
+
+- Grants are applied by migrations, so they are history rather than convergent
+  state. A `pg_dump` restore into a fresh cluster carries the `GRANT`s and not
+  the role (`pg_dumpall --globals-only` does), and a migration that drops and
+  recreates a table drops its ACL. Readiness and the privilege test make both
+  loud; neither repairs them.
+- The role may still create temporary tables. Nothing here depends on it being
+  unable to.
+- Fixture credentials are committed and are fit only for the local stack.
+
+---
+
 ## D-033 — The ledger balances because Postgres refuses it otherwise
 
 **Date:** 2026-09-16 · **Status:** accepted

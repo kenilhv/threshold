@@ -60,6 +60,7 @@ from threshold.adapters.rail.port import (
 )
 from threshold.adapters.rail.sandbox import SandboxRail
 from threshold.domain import ledger
+from threshold.domain.approval import PAYING, Decision
 from threshold.domain.ledger import Account, Transaction, TransactionKind
 from threshold.domain.models import (
     ApprovalDecision,
@@ -115,7 +116,6 @@ class PaymentService:
         state = PaymentState(payment.state)
         if state is PaymentState.PENDING:
             await self._move(session, payment, PaymentState.SUBMITTING)
-            payment.submitted_at = datetime.now(UTC)
             return payment, True
 
         if state is PaymentState.SUBMITTING:
@@ -123,7 +123,6 @@ class PaymentService:
 
         if state is PaymentState.SUBMITTED:
             await self._move(session, payment, PaymentState.SETTLED)
-            payment.settled_at = datetime.now(UTC)
             return payment, False
 
         # Terminal. Reaching here means a job outlived its payment, which is
@@ -144,6 +143,15 @@ class PaymentService:
         ).scalar_one_or_none()
         if decision is None:
             raise PaymentRefusedError(f"no approval decision {approval_decision_id}")
+        # Asked here as well as where the job is enqueued, because this is the
+        # end that moves money and a job is only a message. Until M9 it was
+        # asked nowhere on this side: the executor paid whatever decision its
+        # payload named, including a rejection.
+        if Decision(decision.decision) not in PAYING:
+            raise PaymentRefusedError(
+                f"approval decision {approval_decision_id} is '{decision.decision}', which "
+                "does not authorise a payment"
+            )
 
         result = (
             await session.execute(
@@ -284,6 +292,14 @@ class PaymentService:
         """Transition, post whatever that transition posts, and say so once."""
         current = PaymentState(payment.state)
         payment.state = transition(current, target).value
+        # Stamped here, before anything flushes, so the timestamp travels in the
+        # same UPDATE as the state. They used to be set by the caller afterwards,
+        # which made a second UPDATE against a row that was already `settled` --
+        # and since 0011 Postgres refuses to touch a settled payment at all.
+        if target is PaymentState.SUBMITTING:
+            payment.submitted_at = datetime.now(UTC)
+        elif target is PaymentState.SETTLED:
+            payment.settled_at = datetime.now(UTC)
 
         kind = posting_for(current, target)
         if kind is not None:

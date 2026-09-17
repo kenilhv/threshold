@@ -54,3 +54,16 @@ LIVE: Final = os.environ.get(
     "THRESHOLD_DATABASE_URL",
     "postgresql+asyncpg://threshold:threshold@localhost:5432/threshold",
 )
+
+#: The isolated database again, as the role the running application holds.
+#:
+#: Every other test connects as the owner, because fixtures need to delete what
+#: they created and the owner is who may. That means an in-process service under
+#: test runs with more privilege than it has in production, and would not notice
+#: a missing grant. `test_least_privilege.py` is the one file that connects as
+#: `threshold_app`, so that what the role may and may not do is asserted against
+#: the role itself rather than inferred from a list.
+ISOLATED_AS_APP: Final = os.environ.get(
+    "THRESHOLD_TEST_APP_DATABASE_URL",
+    "postgresql://threshold_app:threshold_app@localhost:5432/threshold_test",
+)

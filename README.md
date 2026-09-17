@@ -15,9 +15,12 @@ show where that line is and why it sits there.
 > idempotently — and the money is written into a double-entry ledger Postgres
 > will not let you unbalance.
 >
-> Sprints M0 through M8 are done. M9 (row-level security, pseudonymisation, a
-> written threat model) and M10 (Terraform, load test) are not started, and the
-> roadmap below says what each would be rather than only naming it.
+> Sprints M0 through M8 are done. M9 is half done: every route now knows who is
+> asking, and the application no longer connects to Postgres as a superuser --
+> which it had since the first commit, and which made every "the database
+> refuses" claim below true of a buggy application and false of a compromised
+> one. Database-enforced write policies, pseudonymisation and the written threat
+> model remain. M10 (Terraform, load test) is not started.
 >
 > **To see it working**, in order:
 >
@@ -321,8 +324,24 @@ reason is stated where it happens rather than implied.
       idempotency key, derived from the approval decision the payment row is
       also unique on. Building it turned up that the schema could say an invoice
       was blocked and could not say for how much.
-- [ ] **M9 — row-level security, pseudonymisation, written threat model.** Not
-      started. The classification layer it would build on exists and is load
+- [ ] **M9 — least privilege, row-level security, pseudonymisation, written
+      threat model.** Two of four increments done.
+      *Done:* the two document reads that had answered anybody since M1 now
+      require a token, and a test walks every route so the next one cannot
+      forget. The API and worker connect as `threshold_app`, which owns nothing
+      and holds table-by-table grants: the record is `SELECT`+`INSERT`, reference
+      data is `SELECT`, and `UPDATE` exists only on the columns that say how far
+      along a job or a payment is. That last narrowing came from attacking the
+      first version: with table-wide `UPDATE ON payment`, a review running as the
+      restricted role pointed a pending payment at another vendor's bank account
+      and multiplied the amount by five. Postgres now also enforces the payment
+      state machine and refuses a payment row that disagrees with the
+      authorisation it cites. Reading the executor for that work found it would
+      have paid a *rejected* invoice if handed the decision's id; it no longer
+      does. D-034 has the grants, the findings, and -- stated as plainly -- what
+      a compromised application can still do.
+      *Not done:* write policies in the database, pseudonymisation, the threat
+      model. The classification layer they build on exists and is load
       bearing: every column declares a sensitivity, an undeclared one is treated
       as restricted, and the review projection is derived from the mapper rather
       than from an allowlist. What is missing is enforcement in the database

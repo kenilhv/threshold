@@ -17,7 +17,16 @@ name: threshold
 x-app-env: &app-env
   THRESHOLD_ENVIRONMENT: local
   THRESHOLD_LOG_LEVEL: INFO
-  THRESHOLD_DATABASE_URL: postgresql+asyncpg://threshold:threshold@postgres:5432/threshold
+  # The runtime identity: LOGIN and table grants, nothing else. Not a superuser,
+  # not an owner, cannot bypass row-level security, cannot disable a trigger.
+  #
+  # This is the anchor's default on purpose. A service that forgets to override
+  # it gets the role that can do least. `migrate` and `seed` override it below
+  # with the owner, and they are the only two things that should.
+  #
+  # THRESHOLD_APP_DB_PASSWORD is read in two places that must agree: here, and by
+  # migration 0010 when it creates (or, if the variable is set, re-keys) the role.
+  THRESHOLD_DATABASE_URL: postgresql+asyncpg://threshold_app:${THRESHOLD_APP_DB_PASSWORD:-threshold_app}@postgres:5432/threshold
   THRESHOLD_S3_ENDPOINT_URL: http://minio:9000
   THRESHOLD_S3_ACCESS_KEY_ID: minioadmin
   THRESHOLD_S3_SECRET_ACCESS_KEY: minioadmin
@@ -136,7 +145,15 @@ services:
     build:
       context: .
       target: runtime
-    environment: *app-env
+    environment:
+      <<: *app-env
+      # The schema owner, used by exactly two short-lived containers. Until M9
+      # every process connected as this -- it is what POSTGRES_USER creates, the
+      # bootstrap superuser -- which meant the append-only audit trigger and the
+      # ledger's balance trigger held against a buggy application and not
+      # against a compromised one: a superuser can disable either in a statement.
+      THRESHOLD_DATABASE_URL: postgresql+asyncpg://threshold:threshold@postgres:5432/threshold
+      THRESHOLD_APP_DB_PASSWORD: ${THRESHOLD_APP_DB_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -147,7 +164,14 @@ services:
     build:
       context: .
       target: runtime
-    environment: *app-env
+    environment:
+      <<: *app-env
+      # The schema owner, used by exactly two short-lived containers. Until M9
+      # every process connected as this -- it is what POSTGRES_USER creates, the
+      # bootstrap superuser -- which meant the append-only audit trigger and the
+      # ledger's balance trigger held against a buggy application and not
+      # against a compromised one: a superuser can disable either in a statement.
+      THRESHOLD_DATABASE_URL: postgresql+asyncpg://threshold:threshold@postgres:5432/threshold
     depends_on:
       migrate:
         condition: service_completed_successfully

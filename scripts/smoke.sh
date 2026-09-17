@@ -112,6 +112,43 @@ check "audit_event rejects UPDATE" "blocked" \
       do \$\$ begin update audit_event set action='tampered' where action='smoke.test'; raise notice 'ALLOWED'; exception when others then raise notice 'blocked'; end \$\$;" 2>&1 \
      | grep -o 'blocked' | head -1)"
 
+# The check above runs as the owner and proves the trigger. This one proves the
+# lock in front of it: the API holds a role that is refused before any trigger
+# is consulted, and cannot switch the trigger off.
+#
+# Asked from inside the API container, with the API's own URL, over the network.
+# The first version of the last two used psql inside the postgres container, and
+# proved less than it said: pg_hba trusts loopback there, so those connections
+# succeeded with any password at all. This path authenticates for real, and it
+# is the credential the process actually holds rather than the one the compose
+# file says it should.
+ROLE_PROBE="$(docker compose exec -T api python -c "
+import asyncio, os, asyncpg
+async def refused(c, sql):
+    try:
+        async with c.transaction():
+            await c.execute(sql)
+    except asyncpg.PostgresError as e:
+        return e.sqlstate
+    return 'PERMITTED'
+async def main():
+    c = await asyncpg.connect(os.environ['THRESHOLD_DATABASE_URL'].replace('+asyncpg', ''))
+    r = await c.fetchrow('select current_user u, rolsuper s, rolbypassrls b from pg_roles where rolname = current_user')
+    print('%s super=%s bypassrls=%s' % (r['u'], r['s'], r['b']))
+    print(await refused(c, \"update audit_event set action = 'tampered'\"))
+    print(await refused(c, 'alter table audit_event disable trigger all'))
+    print(await refused(c, \"update payment set amount_minor = amount_minor * 5\"))
+asyncio.run(main())" 2>&1 | tr -d '\r')"
+
+check "the API's database role is not a superuser" "threshold_app super=False bypassrls=False" \
+  "$(echo "$ROLE_PROBE" | sed -n 1p)"
+check "that role is refused UPDATE on audit_event by privilege (42501)" "42501" \
+  "$(echo "$ROLE_PROBE" | sed -n 2p)"
+check "and cannot disable the trigger behind it (42501)" "42501" \
+  "$(echo "$ROLE_PROBE" | sed -n 3p)"
+check "nor change what a payment is for (42501)" "42501" \
+  "$(echo "$ROLE_PROBE" | sed -n 4p)"
+
 check "seed loaded 5 purchase orders" "5" \
   "$(docker compose exec -T postgres psql -U threshold -d threshold -tAc 'select count(*) from purchase_order' | tr -d '\r' | head -1)"
 

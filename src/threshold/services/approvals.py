@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from threshold.adapters.queue import PostgresJobQueue
 from threshold.domain.approval import (
+    PAYING,
     TERMINAL,
     Authorisation,
     Decision,
@@ -118,13 +119,6 @@ class DecisionRequest:
     #: anything, which is only acceptable for the system's own decision.
     seen_version: int | None
     reason: str | None
-
-
-#: The decisions that release money. `held` and `rejected` do not, and
-#: `auto_approved` does -- which is the point of it being in the same table:
-#: "paid without a person looking" is a WHERE clause rather than a separate path
-#: through this service.
-PAYING: Final[frozenset[Decision]] = frozenset({Decision.AUTO_APPROVED, Decision.APPROVED})
 
 
 async def _request_payment(session: AsyncSession, decision: ApprovalDecision) -> None:

@@ -29,6 +29,25 @@ that has fetched them keeps validating tokens perfectly well while Keycloak is
 unreachable. Reporting such an instance as unready would take a working server
 out of rotation.
 
+**Reaching Postgres is not the same as being allowed to use it.**
+
+Until M9 the database check was `SELECT 1`, and until M9 that was sufficient:
+the application connected as a superuser, so a connection that opened could do
+anything. Since migration 0010 it connects as `threshold_app`, which holds only
+what it was granted, and SQLSTATE 42501 became possible for the first time. The
+review of that migration restored a schema without its ACLs and watched this
+endpoint report ready, for ever, above a worker that could not claim a job --
+`SELECT 1` needs no grant.
+
+So the check asks for the grants this process cannot work without, one privilege
+at a time: `has_table_privilege(role, table, 'SELECT,INSERT')` is true when
+*either* is held, which is the wrong question and an easy one to ask by mistake.
+
+It also reports what kind of role it is. A superuser or BYPASSRLS role outranks
+every grant and every policy in this schema, so an instance holding one is
+reported on the wire. That gates routing in staging and production and not on a
+laptop or in CI, where tests run in-process as the schema owner on purpose.
+
 So the identity provider is reported and never gates routing: how many keys this
 instance holds and how long ago it learned them. That is the number an operator
 actually wants during an IdP incident — it says which instances can still
@@ -85,13 +104,88 @@ async def liveness(settings: Settings = Depends(get_settings)) -> Liveness:
     return Liveness(status="ok", service=settings.service_name)
 
 
-async def _check_database(session: AsyncSession) -> DependencyStatus:
+#: What the API cannot do its job without, as (table, privilege). Not the whole
+#: policy -- `test_least_privilege.py` owns that -- but enough that a schema
+#: restored without its grants, or a role that was never granted anything, is
+#: caught here rather than by the first user to upload an invoice.
+_NEEDS: tuple[tuple[str, str], ...] = (
+    ("document", "INSERT"),
+    ("idempotency_key", "INSERT"),
+    ("job", "INSERT"),
+    ("audit_event", "INSERT"),
+    ("approval_decision", "INSERT"),
+    ("match_result", "SELECT"),
+    ("vendor", "SELECT"),
+)
+
+_ROLE_AND_GRANTS = text(
+    """
+    SELECT r.rolname AS role,
+           (r.rolsuper OR r.rolbypassrls) AS outranks_grants,
+           ARRAY(
+               SELECT need
+                 FROM unnest(CAST(:needs AS text[])) AS need
+                WHERE CASE
+                        WHEN to_regclass('public.' || split_part(need, ':', 1)) IS NULL THEN true
+                        ELSE NOT has_table_privilege(
+                            current_user,
+                            'public.' || split_part(need, ':', 1),
+                            split_part(need, ':', 2)
+                        )
+                      END
+           ) AS missing
+      FROM pg_roles r
+     WHERE r.rolname = current_user
+    """
+)
+
+
+async def _check_database(
+    session: AsyncSession, settings: Settings
+) -> tuple[DependencyStatus, DependencyStatus]:
+    """Whether Postgres answers, whether this role may do its work, and what it is."""
     try:
         async with asyncio.timeout(_DEPENDENCY_TIMEOUT_SECONDS):
-            await session.execute(text("SELECT 1"))
-        return DependencyStatus(name="postgres", ok=True, required=True)
+            row = (
+                await session.execute(
+                    _ROLE_AND_GRANTS, {"needs": [f"{table}:{priv}" for table, priv in _NEEDS]}
+                )
+            ).one()
     except Exception as exc:
-        return DependencyStatus(name="postgres", ok=False, required=True, detail=type(exc).__name__)
+        unknown = DependencyStatus(
+            name="database_role", ok=False, required=False, detail="postgres did not answer"
+        )
+        return (
+            DependencyStatus(name="postgres", ok=False, required=True, detail=type(exc).__name__),
+            unknown,
+        )
+
+    missing = sorted(row.missing)
+    postgres = DependencyStatus(
+        name="postgres",
+        ok=not missing,
+        required=True,
+        detail=(
+            f"role {row.role} lacks {', '.join(missing)}; migrations grant these"
+            if missing
+            else None
+        ),
+    )
+    role = DependencyStatus(
+        name="database_role",
+        ok=not row.outranks_grants,
+        # On a laptop and in CI the in-process tests connect as the schema owner
+        # deliberately. Anywhere else, a runtime that outranks its own grants is
+        # a misconfiguration worth taking the instance out of rotation for.
+        required=not settings.is_local,
+        detail=(
+            f"{row.role} is a superuser or bypasses row-level security: no grant and no "
+            "policy in this schema applies to it"
+            if row.outranks_grants
+            else row.role
+        ),
+    )
+    return postgres, role
 
 
 async def _check_object_store(store: ObjectStore) -> DependencyStatus:
@@ -149,8 +243,10 @@ async def readiness(
     settings: Settings = Depends(get_settings),
     store: ObjectStore = Depends(get_object_store),
 ) -> Readiness:
-    checks = list(await asyncio.gather(_check_database(session), _check_object_store(store)))
-    checks.append(_report_identity(settings))
+    (postgres, role), object_store = await asyncio.gather(
+        _check_database(session, settings), _check_object_store(store)
+    )
+    checks = [postgres, role, object_store, _report_identity(settings)]
 
     ready = all(check.ok for check in checks if check.required)
     if not ready:

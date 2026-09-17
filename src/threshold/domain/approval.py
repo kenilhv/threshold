@@ -59,6 +59,15 @@ class Decision(StrEnum):
 #: documents as its worst.
 TERMINAL: frozenset[Decision] = frozenset({Decision.APPROVED, Decision.REJECTED})
 
+#: The decisions that release money. `held` and `rejected` do not, and
+#: `auto_approved` does -- which is the point of it being in the same table:
+#: "paid without a person looking" is a WHERE clause rather than a separate path.
+#:
+#: Read at both ends of the payment queue: by the approval service deciding
+#: whether to enqueue, and by the executor deciding whether to pay. It lived in
+#: the approval service until the second reader turned out not to exist.
+PAYING: frozenset[Decision] = frozenset({Decision.AUTO_APPROVED, Decision.APPROVED})
+
 
 @dataclass(frozen=True, slots=True)
 class OpenException:

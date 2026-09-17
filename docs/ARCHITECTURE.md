@@ -465,6 +465,17 @@ application has no update or delete path either, but conventions are not
 guarantees, and an audit log that can be edited is not an audit log. The smoke
 test asserts the trigger actually fires.
 
+For eight sprints that paragraph was true of a buggy application and false of a
+compromised one. Every process connected as `threshold`, which is what
+`POSTGRES_USER` creates: the bootstrap superuser and the owner of every table,
+and either of those may `ALTER TABLE audit_event DISABLE TRIGGER ALL`. Since
+migration 0010 the API and the worker connect as `threshold_app`, which holds
+`SELECT` and `INSERT` on this table and owns nothing. An `UPDATE` is refused for
+lack of privilege before the trigger is consulted, and the trigger cannot be
+switched off by the role it constrains. `migrate` and `seed` are the only two
+containers that still hold the owner's credential, and both exit. D-034 has the
+grants and what they do not stop.
+
 Every event carries `trace_id` — the same id as the distributed trace (M5). A
 compliance question ("who approved this and what did the system know?") and an
 engineering question ("why was this slow?") then resolve to the same row.

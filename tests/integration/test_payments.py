@@ -39,6 +39,7 @@ from threshold.adapters.rail.port import (
     RailUnavailableError,
 )
 from threshold.adapters.rail.sandbox import SANDBOX_ID
+from threshold.domain.approval import Decision
 from threshold.domain.ledger import Account
 from threshold.domain.models import (
     ApprovalDecision,
@@ -49,6 +50,8 @@ from threshold.domain.models import (
     Payment,
 )
 from threshold.domain.payments import PaymentState
+from threshold.domain.roles import Role
+from threshold.services.approvals import ApprovalService, DecisionRequest
 from threshold.services.matching import MatchingService
 from threshold.services.payments import PaymentRefusedError, PaymentService
 
@@ -656,6 +659,58 @@ class TestItRefusesWhatItCannotPay:
             with pytest.raises(PaymentRefusedError, match="records no amount"):
                 await PaymentService(AlwaysAccepts()).advance(session, decision.id)
             await session.rollback()
+
+    async def test_a_rejection_is_not_an_authorisation(
+        self, sessions: async_sessionmaker[AsyncSession], clean: None
+    ) -> None:
+        """The executor was handed a decision id and never asked what was decided.
+
+        `_request_payment` only enqueues for an approving decision, and for a
+        sprint that was the only place the question was asked -- on the way
+        *into* the queue. The executor trusted whatever id its job carried. A
+        replayed dead letter, a hand-enqueued job during an incident or a bug
+        upstream would each have paid an invoice a person had refused.
+
+        The guard belongs at the end that moves money, whatever the other end does.
+        """
+        async with sessions() as session:
+            document = await _document_with_extraction(
+                session,
+                _invoice_fields(
+                    invoice_number=f"PAY-{uuid.uuid4().hex[:8].upper()}",
+                    unit_price="21.0000",  # PO-44718 agrees 18.40: blocked, buyer's to decide
+                ),
+            )
+            await session.flush()
+            result = await MatchingService().match_document(session, document.id)
+            assert result.disposition == "blocked", result.disposition
+            assert result.amount_minor is not None, "nothing to pay, so nothing is being tested"
+
+            refusal = await ApprovalService().decide(
+                session,
+                DecisionRequest(
+                    match_result_id=result.id,
+                    decision=Decision.REJECTED,
+                    seen_version=result.version,
+                    reason="billed above the agreed price",
+                ),
+                actor_id="buyer-sub",
+                actor_label="A Buyer",
+                roles=frozenset({Role.BUYER}),
+            )
+            await session.commit()
+            refusal_id = refusal.id
+
+            with pytest.raises(PaymentRefusedError, match="does not authorise"):
+                await PaymentService(AlwaysAccepts()).advance(session, refusal_id)
+            await session.rollback()
+
+            paid = (
+                await session.execute(
+                    select(Payment).where(Payment.approval_decision_id == refusal_id)
+                )
+            ).scalar_one_or_none()
+            assert paid is None, "a payment row exists for an invoice somebody rejected"
 
     async def test_an_authorisation_that_does_not_exist_is_refused(
         self, sessions: async_sessionmaker[AsyncSession]
