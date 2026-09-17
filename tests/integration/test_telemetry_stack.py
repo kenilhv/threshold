@@ -31,6 +31,7 @@ from typing import Any
 
 import httpx
 import pytest
+from tests.integration.databases import LIVE
 
 from threshold.observability import metrics as m
 
@@ -337,9 +338,7 @@ def _newest_trace_id() -> str | None:
     from sqlalchemy.ext.asyncio import create_async_engine
 
     async def read() -> str | None:
-        engine = create_async_engine(
-            "postgresql+asyncpg://threshold:threshold@localhost:5432/threshold"
-        )
+        engine = create_async_engine(LIVE)
         try:
             async with engine.connect() as connection:
                 result = await connection.execute(

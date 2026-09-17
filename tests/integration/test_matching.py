@@ -27,6 +27,7 @@ import pytest_asyncio
 from sqlalchemy import delete, select, text
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from tests.integration.databases import ISOLATED
 
 from threshold.domain.extraction import RESTRICTED_FIELD_KEYS, redacted_fields
 from threshold.domain.matching import Disposition
@@ -43,7 +44,8 @@ from threshold.services.matching import MatchingError, MatchingService
 
 pytestmark = pytest.mark.integration
 
-DATABASE_URL = "postgresql+asyncpg://threshold:threshold@localhost:5432/threshold"
+#: Isolated: the matcher is judged on rows it wrote itself.
+DATABASE_URL = ISOLATED
 
 #: Seeded. PO-44718 carries three lines at 18.40, all fully received.
 CLEAN_PO = "PO-44718"

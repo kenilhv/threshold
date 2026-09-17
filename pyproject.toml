@@ -115,6 +115,7 @@ ignore = ["B008"]      # FastAPI's Depends() in defaults is the documented idiom
 "tests/unit/test_seed_coupling.py" = ["E402"]  # repo root must reach sys.path first
 "scripts/check_migration_graph.py" = ["T201"]
 "scripts/queuectl.py" = ["T201"]
+"scripts/test_db.py" = ["T201"]
 "scripts/check_console.py" = ["T201", "E402", "S101"]
 "scripts/check_trace.py" = ["T201"]
 "scripts/check_metrics.py" = ["T201"]

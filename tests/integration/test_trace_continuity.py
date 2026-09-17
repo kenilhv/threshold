@@ -25,12 +25,14 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from tests.integration.databases import LIVE
 from tests.unit.test_fixture_layouts import build_spec, render
 
 pytestmark = pytest.mark.integration
 
 API = "http://localhost:8000"
-DATABASE_URL = "postgresql+asyncpg://threshold:threshold@localhost:5432/threshold"
+#: The live database on purpose: the trace is produced by the API and the worker, in their database.
+DATABASE_URL = LIVE
 
 #: Every audit row an auto-approved invoice produces. Four, not five: the
 #: automatic approval and a human decision are alternatives, never both.

@@ -29,6 +29,7 @@ import pytest_asyncio
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from tests.integration.databases import ISOLATED
 from tests.integration.test_matching import _document_with_extraction, _invoice_fields
 
 from threshold.adapters.rail.port import (
@@ -53,7 +54,8 @@ from threshold.services.payments import PaymentRefusedError, PaymentService
 
 pytestmark = pytest.mark.integration
 
-DATABASE_URL = "postgresql+asyncpg://threshold:threshold@localhost:5432/threshold"
+#: Isolated: a payment's ledger entries must be the only ones moving.
+DATABASE_URL = ISOLATED
 
 
 class AlwaysAccepts:

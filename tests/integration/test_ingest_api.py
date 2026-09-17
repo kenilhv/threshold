@@ -22,6 +22,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from tests.integration.databases import LIVE
 from tests.unit.test_fixture_layouts import build_spec, render
 
 from threshold.api.idempotency import remember
@@ -252,9 +253,7 @@ class TestIdempotencyDoesNotCostTheCallerItsWork:
     """
 
     async def test_a_concurrent_duplicate_key_does_not_discard_the_document(self) -> None:
-        engine = create_async_engine(
-            "postgresql+asyncpg://threshold:threshold@localhost:5432/threshold"
-        )
+        engine = create_async_engine(LIVE)
         try:
             async with engine.connect() as conn:
                 await conn.execute(sa_text("SELECT 1"))

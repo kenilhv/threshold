@@ -28,6 +28,7 @@ import pytest_asyncio
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from tests.integration.databases import ISOLATED
 from tests.integration.test_matching import _document_with_extraction, _invoice_fields
 
 from threshold.adapters.db import dispose_engine, init_engine
@@ -51,7 +52,8 @@ from threshold.workers.handlers import match_invoice, triage_invoice
 
 pytestmark = pytest.mark.integration
 
-DATABASE_URL = "postgresql+asyncpg://threshold:threshold@localhost:5432/threshold"
+#: Isolated: an escalation is unique per match result, so nothing else may write one.
+DATABASE_URL = ISOLATED
 
 #: The two-desk invoice: a payment redirect alongside a price dispute. The only
 #: shape in which the deterministic tier has an opinion at all.

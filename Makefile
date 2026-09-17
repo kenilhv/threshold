@@ -77,8 +77,15 @@ seed: ## Load reference data (idempotent)
 test: ## Unit tests (no stack required)
 	python -m pytest tests/unit -q
 
+# The suite owns a database, and provisioning it is part of running it. Left as
+# a separate target somebody has to know about, the first run on a new machine
+# fails with a connection error that says nothing about why.
+.PHONY: test-db
+test-db: ## Create, migrate and seed the database the integration suite owns
+	@python scripts/test_db.py
+
 .PHONY: test-integration
-test-integration: ## Integration tests (requires: make up)
+test-integration: test-db ## Integration tests (requires: make up)
 	python -m pytest tests/integration -q -m integration
 
 .PHONY: lint

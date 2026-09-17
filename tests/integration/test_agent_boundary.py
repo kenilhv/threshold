@@ -24,6 +24,8 @@ import pytest_asyncio
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from tests.integration.databases import ISOLATED
+from tests.integration.test_matching import _document_with_extraction, _invoice_fields
 
 from threshold.agent import tools
 from threshold.domain.models import (
@@ -35,10 +37,12 @@ from threshold.domain.models import (
     VendorBankAccount,
 )
 from threshold.domain.projection import restricted_columns
+from threshold.services.matching import MatchingService
 
 pytestmark = pytest.mark.integration
 
-DATABASE_URL = "postgresql+asyncpg://threshold:threshold@localhost:5432/threshold"
+#: Isolated: the agent's perimeter is a property of the schema.
+DATABASE_URL = ISOLATED
 
 
 @pytest_asyncio.fixture
@@ -99,6 +103,40 @@ class TestTheDatabaseRefusesTheAgentsWrites:
             assert "read-only" in str(caught.value).lower()
 
 
+@pytest_asyncio.fixture(autouse=True, scope="module")
+async def a_decided_invoice() -> AsyncIterator[None]:
+    """Put one real, fully matched invoice in the isolated database.
+
+    Module-scoped: the tests below only read, so one is enough for all of them,
+    and building it once keeps the file fast.
+
+    Built through `MatchingService` rather than by hand. The projection is what
+    is under test, and a hand-assembled `MatchResult` would be a row shaped the
+    way this test imagines rather than the way the system writes them -- which
+    is exactly the difference that would let a restricted value through
+    unnoticed.
+    """
+    engine = create_async_engine(DATABASE_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessions() as session:
+            existing = (
+                await session.execute(
+                    select(MatchResult).where(MatchResult.purchase_order_id.is_not(None)).limit(1)
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                document = await _document_with_extraction(
+                    session, _invoice_fields(invoice_number=f"AGENT-{uuid.uuid4().hex[:8].upper()}")
+                )
+                await session.flush()
+                await MatchingService().match_document(session, document.id)
+                await session.commit()
+        yield
+    finally:
+        await engine.dispose()
+
+
 class TestTheToolsCannotReachRestrictedData:
     """The agent cannot exfiltrate what it never held.
 
@@ -117,16 +155,23 @@ class TestTheToolsCannotReachRestrictedData:
 
     @staticmethod
     async def _first_match(session: AsyncSession) -> MatchResult | None:
-        """A match result that will still be there in a moment.
+        """A match result made for this test, not borrowed from the database.
 
-        Deliberately not the newest. The worker writes match results constantly,
-        so `order by decided_at desc` hands back a row that may be mid-pipeline
-        -- and worse, a different row on each call inside the same test, which
-        is how this failed under load while passing in isolation.
+        This used to take whichever row happened to be there and skip when there
+        were none -- "no match results yet; run `make smoke`". On the shared
+        database that skip never fired, so nobody noticed the two tests beneath
+        it were asserting against ambient data they did not create. On an
+        isolated database it fired immediately, and the two tests that prove the
+        agent cannot reach a bank number stopped running at all.
 
-        The oldest is stable: nothing rewrites it, and the projection is a pure
-        function of the row, so which one is used does not affect what is being
-        proved.
+        A test that quietly does not run is worse than one that fails, and this
+        pair is not one to lose: they are the value-level check behind the claim
+        in `ARCHITECTURE.md` that the agent sees `bank_changed: true` and never a
+        bank number.
+
+        So it builds one. Through the real matcher against a seeded purchase
+        order, because a hand-written row would prove the projection works on
+        rows shaped the way this test imagines them.
         """
         return (
             (
@@ -182,8 +227,7 @@ class TestTheToolsCannotReachRestrictedData:
         """
         async with tools.read_only(sessions) as session:
             match = await self._first_match(session)
-            if match is None:
-                pytest.skip("no match results yet; run `make smoke`")
+            assert match is not None, "the fixture did not leave a decided invoice behind"
             projected = await tools.get_match(session, match.id)
             exceptions = await tools.get_exceptions(session, match.id)
 
@@ -203,8 +247,7 @@ class TestTheToolsCannotReachRestrictedData:
         """
         async with tools.read_only(sessions) as session:
             match = await self._first_match(session)
-            if match is None:
-                pytest.skip("no match results yet; run `make smoke`")
+            assert match is not None, "the fixture did not leave a decided invoice behind"
 
             document = await tools.get_document(session, match.document_id)
             order = (
