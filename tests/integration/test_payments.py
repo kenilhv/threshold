@@ -138,6 +138,36 @@ async def balances(session: AsyncSession) -> dict[Account, int]:
     return await PaymentService().trial_balance(session)
 
 
+async def _postings_for(
+    session: AsyncSession, payment_id: uuid.UUID, *, match_result_id: uuid.UUID
+) -> dict[Account, int]:
+    """Every posting this one invoice caused, by account, zero-filled.
+
+    The accrual hangs off the match result and the three payment movements hang
+    off the payment, so both are needed to see the whole story of one invoice.
+
+    Zero-filled across the chart on purpose: an account that nets to zero and an
+    account that was never touched are different facts, and an assertion like
+    "the liability nets to nothing" is only meaningful if a missing key cannot
+    satisfy it by accident.
+    """
+    rows = (
+        await session.execute(
+            select(LedgerEntry.account, func.sum(LedgerEntry.amount_minor))
+            .join(LedgerTransaction, LedgerTransaction.id == LedgerEntry.transaction_id)
+            .where(
+                (LedgerTransaction.payment_id == payment_id)
+                | (LedgerTransaction.match_result_id == match_result_id)
+            )
+            .group_by(LedgerEntry.account)
+        )
+    ).all()
+    totals = dict.fromkeys(Account, 0)
+    for account, total in rows:
+        totals[Account(account)] = int(total)
+    return totals
+
+
 async def run_to_completion(
     session: AsyncSession, service: PaymentService, decision_id: uuid.UUID, *, limit: int = 8
 ) -> Payment:
@@ -208,7 +238,6 @@ class TestTheHappyPath:
         async with sessions() as session:
             decision = await approved_invoice(session)
             await session.commit()
-            before = await balances(session)
 
             payment = await run_to_completion(session, PaymentService(AlwaysAccepts()), decision.id)
 
@@ -219,13 +248,19 @@ class TestTheHappyPath:
 
             after = await balances(session)
             amount = payment.amount_minor
+            # What *this* payment moved, rather than what the system's totals
+            # did. A live worker settles other payments while this test runs, so
+            # a before/after delta on a global account measures the whole
+            # database and fails whenever anything else happens to be in flight.
+            mine = await _postings_for(session, payment.id, match_result_id=payment.match_result_id)
 
         assert sum(after.values()) == 0, "the trial balance does not balance"
         # Accrued and then paid: the liability nets to nothing, the expense stays.
-        assert after.get(Account.ACCOUNTS_PAYABLE, 0) == before.get(Account.ACCOUNTS_PAYABLE, 0)
-        assert after.get(Account.CASH_IN_TRANSIT, 0) == before.get(Account.CASH_IN_TRANSIT, 0)
-        assert after.get(Account.EXPENSE, 0) - before.get(Account.EXPENSE, 0) == amount
-        assert after.get(Account.CASH, 0) - before.get(Account.CASH, 0) == -amount
+        assert mine[Account.ACCOUNTS_PAYABLE] == 0, mine
+        assert mine[Account.CASH_IN_TRANSIT] == 0, mine
+        assert mine[Account.EXPENSE] == amount, mine
+        assert mine[Account.CASH] == -amount, mine
+        assert sum(mine.values()) == 0, mine
 
     async def test_it_takes_four_steps_and_each_one_is_durable(
         self, sessions: async_sessionmaker[AsyncSession], clean: None

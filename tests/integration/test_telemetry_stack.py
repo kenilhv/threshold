@@ -344,8 +344,19 @@ def _newest_trace_id() -> str | None:
             async with engine.connect() as connection:
                 result = await connection.execute(
                     text(
+                        # The newest trace that began with an HTTP request.
+                        #
+                        # `document.received` is written by the API and by
+                        # nothing else, so requiring it excludes traces the
+                        # worker started by itself -- a payment job enqueued by
+                        # an earlier approval has only worker spans, and asking
+                        # Tempo whether it crosses the queue is asking the wrong
+                        # question about the right data. Under load those are
+                        # most of the newest rows, which is why this failed
+                        # under load and nowhere else.
                         "select trace_id from audit_event "
-                        "where trace_id is not null order by occurred_at desc limit 1"
+                        "where trace_id is not null and action = 'document.received' "
+                        "order by occurred_at desc limit 1"
                     )
                 )
                 row = result.first()

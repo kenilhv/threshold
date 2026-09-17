@@ -113,11 +113,30 @@ async def _submit_and_wait(client: httpx.Client, sessions: async_sessionmaker[As
     else:
         pytest.fail("the worker never matched the invoice")
 
-    for _ in range(20):
-        if len(await _story(sessions, document_id)) >= len(EXPECTED_ACTIONS):
-            break
+    # Waits for the story to be *complete*, and says so when it is not.
+    #
+    # This used to run twenty quarter-second rounds and then return whatever it
+    # had. Under a busy worker -- a smoke run or a demo still draining its
+    # queue -- the approval row had not landed inside five seconds, so the
+    # caller asserted against a three-row story and failed on the action list.
+    # The message blamed the trace ids, which were fine.
+    #
+    # A bounded wait that expires silently is worse than no wait: it converts a
+    # slow pipeline into a wrong-looking assertion somewhere else. The budget
+    # matches the one above it, and running out is its own failure with its own
+    # sentence.
+    story: list[tuple[str, str, str | None]] = []
+    for _ in range(120):
+        story = await _story(sessions, document_id)
+        if len(story) >= len(EXPECTED_ACTIONS):
+            return document_id
         await asyncio.sleep(0.25)
-    return document_id
+
+    pytest.fail(
+        f"the pipeline produced {len(story)} of {len(EXPECTED_ACTIONS)} audit rows in 30s: "
+        f"{[action for action, _, _ in story]}. The trace is not the problem; "
+        "something upstream did not finish."
+    )
 
 
 class TestOneInvoiceOneTrace:

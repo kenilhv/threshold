@@ -160,3 +160,29 @@ export function postDecision(
     body: JSON.stringify(payload),
   });
 }
+
+/**
+ * One account's standing balance.
+ *
+ * `kind` is carried because the sign alone does not say whether a balance is
+ * healthy. Liabilities and equity run credit-negative, so accounts payable at
+ * -482000 means we owe 4,820.00 and is exactly right, while the same number on
+ * cash is an overdraft.
+ */
+export type AccountBalance = {
+  account: string;
+  kind: string;
+  amount_minor: number;
+  amount: string;
+};
+
+export type TrialBalance = {
+  accounts: AccountBalance[];
+  total_minor: number;
+  balanced: boolean;
+  currency: string;
+};
+
+export function getTrialBalance(): Promise<TrialBalance> {
+  return call<TrialBalance>("/v1/ledger/trial-balance");
+}

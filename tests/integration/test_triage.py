@@ -111,6 +111,7 @@ async def make_invoice(
     )
     session.add(result)
     await session.flush()
+    _CREATED.append(document.id)
 
     raised_at = datetime.now(UTC)
     for code in codes:
@@ -129,41 +130,47 @@ async def make_invoice(
     return result
 
 
+#: Documents this module created, so the cleanup can remove exactly those.
+#:
+#: The first version of this deleted every row with `source="fixture"`, which is
+#: the marker `test_matching.py` and `test_payments.py` use too. Running after
+#: each of fifteen tests, it took their fixtures out from under them and out
+#: from under the live worker mid-job -- twenty errors in one run, none of them
+#: about triage. A cleanup that deletes more than it made is not a cleanup.
+_CREATED: list[uuid.UUID] = []
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def clean(sessions: async_sessionmaker[AsyncSession]) -> AsyncIterator[None]:
-    """Remove what these tests create, afterwards, every time.
+    """Remove what *this test* created, afterwards, every time.
 
-    `autouse` rather than opt-in: this file had no cleanup at all and left 195
-    documents behind, which flooded the reviewer queue in the demo database with
-    rows carrying no vendor and no amount -- the exact shape a queue cannot be
-    triaged from. A fixture somebody has to remember to request is a fixture
-    that gets forgotten, and it was.
+    `autouse` rather than opt-in, because this file had no cleanup at all and
+    left 195 documents behind -- which flooded the reviewer queue in the demo
+    database with rows carrying no vendor and no amount, the exact shape a queue
+    cannot be triaged from. A fixture somebody has to remember to request is a
+    fixture that gets forgotten, and it was.
 
-    Narrow on purpose. This database holds the seeded purchase orders these
-    tests match against, and a blanket delete would take them too.
+    Scoped to `_CREATED` rather than to a marker, because a marker is shared and
+    this database is shared: the seeded purchase orders these tests match
+    against live in it, and so do the fixtures of every other integration file,
+    and so does whatever the worker is halfway through.
     """
+    _CREATED.clear()
     yield
+    if not _CREATED:
+        return
     async with sessions() as session:
-        documents = (
-            (await session.execute(select(Document.id).where(Document.source == "fixture")))
-            .scalars()
-            .all()
-        )
-        if not documents:
-            return
+        mine = list(_CREATED)
         results = (
-            (
-                await session.execute(
-                    select(MatchResult.id).where(MatchResult.document_id.in_(documents))
-                )
-            )
+            (await session.execute(select(MatchResult.id).where(MatchResult.document_id.in_(mine))))
             .scalars()
             .all()
         )
         if results:
             await session.execute(delete(Escalation).where(Escalation.match_result_id.in_(results)))
-        await session.execute(delete(Document).where(Document.id.in_(documents)))
+        await session.execute(delete(Document).where(Document.id.in_(mine)))
         await session.commit()
+    _CREATED.clear()
 
 
 class TestTheEscalationIsWritten:
@@ -539,6 +546,7 @@ class TestTheWholeChainFromDecisionToEscalation:
                 ),
             )
             document_id = document.id
+            _CREATED.append(document_id)
             await session.commit()
 
             await match_invoice(session, {"document_id": str(document_id)})
@@ -568,8 +576,26 @@ class TestTheWholeChainFromDecisionToEscalation:
             ).scalar_one()
             assert job.kind == "triage_invoice"
             assert job.payload["match_result_id"] == str(result.id)
+            payload = dict(job.payload)
 
-            await triage_invoice(session, job.payload)
+            # Take the job off the queue before running it.
+            #
+            # This test enqueues real work into a queue a real worker is
+            # draining. Left there, the worker claims it and writes the
+            # escalation, and then this test writes a second one for the same
+            # match result -- which `uq_escalation_match_result` refuses,
+            # correctly, with a unique violation that reads like a bug in the
+            # service and is a bug in the test.
+            #
+            # Deleting rather than waiting for the worker: what is being proved
+            # here is that `match_invoice` enqueues the right payload and that
+            # `triage_invoice` acts on it. Whether a worker happens to be up is
+            # a different claim, and one `scripts/smoke.sh` already makes
+            # against the running stack.
+            await session.execute(delete(Job).where(Job.id == job.id))
+            await session.commit()
+
+            await triage_invoice(session, payload)
             await session.commit()
 
             escalation = (
@@ -596,6 +622,7 @@ class TestTheWholeChainFromDecisionToEscalation:
                 _invoice_fields(invoice_number=f"TRI-{uuid.uuid4().hex[:8].upper()}"),
             )
             document_id = document.id
+            _CREATED.append(document_id)
             await session.commit()
 
             await match_invoice(session, {"document_id": str(document_id)})

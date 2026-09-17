@@ -117,8 +117,25 @@ class TestTheToolsCannotReachRestrictedData:
 
     @staticmethod
     async def _first_match(session: AsyncSession) -> MatchResult | None:
+        """A match result that will still be there in a moment.
+
+        Deliberately not the newest. The worker writes match results constantly,
+        so `order by decided_at desc` hands back a row that may be mid-pipeline
+        -- and worse, a different row on each call inside the same test, which
+        is how this failed under load while passing in isolation.
+
+        The oldest is stable: nothing rewrites it, and the projection is a pure
+        function of the row, so which one is used does not affect what is being
+        proved.
+        """
         return (
-            (await session.execute(select(MatchResult).order_by(MatchResult.decided_at.desc())))
+            (
+                await session.execute(
+                    select(MatchResult)
+                    .where(MatchResult.purchase_order_id.is_not(None))
+                    .order_by(MatchResult.decided_at.asc())
+                )
+            )
             .scalars()
             .first()
         )

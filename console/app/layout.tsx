@@ -20,6 +20,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <header className="bar">
           <h1>Threshold</h1>
           <a href="/queue">Queue</a>
+          <a href="/ledger">Books</a>
           {session ? (
             <span className="who">
               {session.username} · {session.roles.join(", ") || "no roles"}
