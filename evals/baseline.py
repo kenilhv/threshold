@@ -25,6 +25,20 @@ in the file, so a bump appears in the diff and the gate says plainly that a
 baseline regenerated across one is a behaviour change under review rather than a
 refresh.
 
+That reasoning holds and it was incomplete. It assumed the bump would arrive as
+a deliberate upgrade in a pull request, and the first time this gate ran
+anywhere but the machine that wrote the baseline, it arrived as CI resolving
+`pypdf>=5.1` to a newer release than the laptop had. Every extraction metric was
+identical; only the version line moved; the gate failed. A gate that goes red
+for a library bump that changed nothing teaches people to ignore it, which costs
+more than the bump.
+
+So `check_eval.py` separates the two: a `measured_by.*` line that moves alone is
+reported and passes, and any *reading* that moves still fails. The versions are
+still recorded, a bump still appears in the diff, and the one case the gate
+cannot resolve -- a reading that moved alongside an upgrade -- is called out as
+exactly that.
+
 The format is one metric per line rather than JSON, for one reason: a pull
 request diff. A changed count is one changed line, and a reviewer can see which
 field on which layout moved without expanding anything.

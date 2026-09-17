@@ -219,3 +219,60 @@ class TestTheCommittedBaseline:
         satisfy the test above while making the system useless."""
         parsed = parse(COMMITTED.read_text(encoding="utf-8"))
         assert int(parsed["shipped.accepted"]) > 0
+
+
+class TestAnInstrumentThatMovedAloneIsNotARegression:
+    """The gate's exit code, which is the part that decides whether anybody reads it.
+
+    `pypdf` and `reportlab` are declared with lower bounds rather than pinned,
+    deliberately -- see the module docstring in `evals/baseline.py`. The
+    consequence was invisible until the gate ran somewhere other than the
+    machine that wrote the baseline: CI resolved a newer `pypdf`, every single
+    extraction reading was identical, and the gate failed anyway. It stayed red
+    on every commit for a library bump that demonstrably changed nothing.
+
+    A gate that fails for that teaches people to ignore it, and an ignored gate
+    protects nothing. So a `measured_by.*` line that moves *alone* is reported
+    and passes; anything that moves a reading still fails.
+
+    These test the split rather than the process: `check_eval.py` decides on
+    `results = differences - instrument_changes(differences)`, and that is the
+    expression asserted here.
+    """
+
+    def _split(self, baseline: str, current: str) -> tuple[list[str], list[str]]:
+        differences = compare(baseline, current)
+        instruments = instrument_changes(differences)
+        results = [d for d in differences if d not in instruments]
+        return [d.key for d in instruments], [d.key for d in results]
+
+    def test_a_version_line_alone_leaves_no_results(self) -> None:
+        baseline = "measured_by.pypdf  6.16.2\nshipped.wrong  0\n"
+        current = "measured_by.pypdf  6.19.0\nshipped.wrong  0\n"
+        instruments, results = self._split(baseline, current)
+        assert instruments == ["measured_by.pypdf"]
+        assert results == [], "the gate would have failed on a bump that changed nothing"
+
+    def test_a_reading_that_moved_is_still_a_result(self) -> None:
+        """The half that must never soften. `shipped.wrong` counts invoices this
+        system would auto-approve on a misreading."""
+        baseline = "measured_by.pypdf  6.16.2\nshipped.wrong  0\n"
+        current = "measured_by.pypdf  6.19.0\nshipped.wrong  3\n"
+        instruments, results = self._split(baseline, current)
+        assert instruments == ["measured_by.pypdf"]
+        assert results == ["shipped.wrong"], "a regression hid behind an instrument change"
+
+    def test_a_reading_that_moved_without_any_bump_is_still_a_result(self) -> None:
+        baseline = "measured_by.pypdf  6.16.2\nshipped.wrong  0\n"
+        current = "measured_by.pypdf  6.16.2\nshipped.wrong  1\n"
+        instruments, results = self._split(baseline, current)
+        assert instruments == []
+        assert results == ["shipped.wrong"]
+
+    def test_the_real_baseline_records_an_instrument_to_be_lenient_about(self) -> None:
+        """The vacuity guard. If nothing in the committed baseline were prefixed
+        `measured_by.`, every assertion above would be about a case that cannot
+        occur."""
+        parsed = parse(Path("evals/baseline.txt").read_text(encoding="utf-8"))
+        recorded = [key for key in parsed if key.startswith("measured_by.")]
+        assert sorted(recorded) == ["measured_by.pypdf", "measured_by.reportlab"]

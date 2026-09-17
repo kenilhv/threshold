@@ -82,6 +82,40 @@ def main() -> int:
         return 0
 
     instruments = instrument_changes(differences)
+    results = [d for d in differences if d not in instruments]
+
+    # An instrument that moved and changed nothing it measures is not a
+    # regression, and failing on it makes this gate cry wolf.
+    #
+    # `pypdf` and `reportlab` are declared with lower bounds rather than pinned,
+    # for a reason the baseline's own docstring argues: pinning a production
+    # dependency exactly, to protect a test fixture, freezes it against security
+    # updates. The consequence went unnoticed until this ran somewhere other
+    # than the machine that wrote the baseline. CI resolved pypdf 6.19.0 against
+    # a baseline recorded at 6.16.2, every extraction metric was identical, and
+    # the gate failed anyway -- red on every commit, for a library bump that
+    # demonstrably changed nothing about how this system reads an invoice.
+    #
+    # So the version lines are treated as what they are: metadata recorded so a
+    # bump shows up in the diff, not measurements of the extractor. They are
+    # reported and they never fail on their own. The moment a *result* moves
+    # they matter again -- and the message below says so, because a bump that
+    # coincides with a changed reading is the case where you cannot tell which
+    # caused what.
+    if not results:
+        print(
+            f"extraction unchanged against the baseline ({args.documents} documents), "
+            "measured with a different instrument:"
+        )
+        for difference in instruments:
+            print(difference)
+        print(
+            "\nEvery reading is identical, so the upgrade did not change what this\n"
+            "system reads. Refresh the recorded versions with `make eval-baseline`\n"
+            "when convenient; nothing is wrong."
+        )
+        return 0
+
     print(f"\n{len(differences)} metric(s) moved against evals/baseline.txt:\n", file=sys.stderr)
     for difference in differences:
         print(difference, file=sys.stderr)
@@ -90,7 +124,9 @@ def main() -> int:
         print(
             "\nOne of the libraries that renders or reads the corpus has changed version.\n"
             "The instrument moved, so every other difference here is a measurement under\n"
-            "new conditions rather than a change in the extractor. Read them that way.",
+            "new conditions rather than a change in the extractor. Read them that way --\n"
+            "and note that this is the case the gate cannot resolve for you: a reading\n"
+            "that moved alongside an upgrade could be either.",
             file=sys.stderr,
         )
 
