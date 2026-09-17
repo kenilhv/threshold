@@ -1,9 +1,11 @@
 """Every route knows who is asking, or says out loud why it does not need to.
 
 `GET /v1/documents/{id}` and `GET /v1/documents/{id}/match` shipped with no
-authentication at all -- not weak authorisation, none -- from M1 until M9. An
-anonymous caller got the vendor's name, the invoice amount, the free text of
-every exception, and from M8 the payment's state and its rail reference. The
+authentication at all -- not weak authorisation, none. The first since M1 and
+the second since M3, in both cases until M9; an earlier version of this
+docstring dated both to M1, which `git log -S` disagrees with. An anonymous
+caller got the vendor's name, the invoice amount, the free text of every
+exception, and from M8 the payment's state and its rail reference. The
 queue beside them returned 401 the whole time, which is how it went unnoticed:
 the routes that *looked* sensitive were guarded, and the ones that returned the
 same data one document at a time were not.

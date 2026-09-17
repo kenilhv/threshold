@@ -32,6 +32,7 @@ FROZEN_CODES = {
     "arithmetic_mismatch",
     "line_total_mismatch",
     "low_confidence_field",
+    "checks_incomplete",
     "bank_details_changed",
 }
 

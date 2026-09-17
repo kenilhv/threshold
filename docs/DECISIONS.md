@@ -93,112 +93,14 @@ through. This is the fourth time in this project a declaration has drifted from
 its only reader; it is the reason tests here derive from the mapper wherever
 they can.
 
-### What still reaches a model tier, stated plainly
+### Proving the tests would notice
 
-Invoice numbers, purchase-order numbers, amounts and the supplier's own line
-descriptions, inside the free text of `MatchException.detail`, `breach` and
-`MatchResult.skipped_checks`. They are the evidence the triager reasons about,
-and removing them would be masking that destroys the reviewer's task — the
-failure the classification module's own docstring warns about.
-
-So the `TriageRequest` docstring no longer says it "can be handed to a third
-party's API without a second review". It says what is in it.
-
-### If an outside-review export is ever built
-
-The alias key belongs to that job's settings, not to the API, the worker and
-Alembic. Until something is exported, a key those three processes must hold is a
-secret with no purpose and three places to leak from.
-
----
-
-## D-036 — Identity columns are withheld from the agent, and the alias scheme was abandoned
-
-**Date:** 2026-09-17 · **Status:** accepted
-
-Since M6 this repository has promised a pseudonymisation scheme. The
-classification module said INTERNAL data was "pseudonymised for outside review,
-with ratios preserved so a 54% overbill still reads as 54%". The README's M9
-entry promised "a stable-alias scheme that preserves the shape of a judgment".
-`scripts/seed.py` carried an HMAC key with the comment "The real one is a
-per-deployment secret; see M9".
-
-None of it existed, and this increment does not build it. What it builds is
-smaller and, unlike the scheme, useful: the columns that name a person or a
-company are marked on the column and dropped from the agent's projection.
-
-### Why the scheme died
-
-It was designed first — HMAC-SHA256 over a kind-prefixed value, a truncated
-token, a per-deployment key, a `Settings` field with no default so that every
-process refuses to start without one. Then it was attacked, and it did not
-survive contact with the code it was supposed to protect.
-
-**There is no consumer.** Every promise was about an *outside reviewer* who
-still has to judge. No such reviewer exists. `project()` has exactly two callers:
-the agent's four tools, and the console's vendor view. The console must show
-real names — a review queue that will not say who is billing is not a review
-queue — so the scheme could only ever apply to the agent.
-
-**For the agent, an alias carries exactly what dropping carries.** The agent
-never reads a vendor row: there is no vendor tool, and adding one would be a
-security change with its own test. A stable alias of a buyer's email address
-buys nothing, because routing is by role and never by address. A stable alias of
-a filename buys less than nothing: it is a string an attacker chose, and one of
-the injection channels the red-team suite fires through. `V-7f3a` and *absent*
-are the same amount of information to a triager that does not read vendors.
-
-**A shared key over low-entropy inputs is a liability, not a control.** Vendor
-names, employee addresses and `INV-<n>.pdf` filenames are enumerable. Anyone
-holding the key and the emitted aliases recovers the plaintext in one pass —
-and the emitted aliases are, by the scheme's own design, in the hands of the
-third party. A leaked key retroactively de-pseudonymises everything ever sent,
-and no rotation un-sends it. Rotation also breaks the stability that was the
-whole point.
-
-**Every environment but production would have run with a public key.** The
-compose file would have carried a well-known value, CI sets no `THRESHOLD_`
-variables, and the test conftest would have set a fixed one. "Aliased with a
-key everybody has" is indistinguishable from un-aliased, which is the exact
-objection that ruled out making the key optional.
-
-Dropping needs no key, so none of that applies.
-
-### What was built
-
-`classify(level, *, identity=True)` marks a column. The key is omitted from
-`info` when false, so almost every column is declared exactly as before.
-`project(row, *, identities=False)` drops the marked ones, and the agent's tools
-pass it. Three columns are marked today: `Vendor.legal_name` and
-`display_name`, `Document.original_filename`, `PurchaseOrder.buyer_email`.
-
-Identity is a second axis rather than a fourth sensitivity level, because what
-separates these columns from other INTERNAL ones is not how sensitive they are
-but what they are for. A `PUBLIC` identity is a contradiction and raises; a
-`RESTRICTED` one is redundant and raises.
-
-Marking `Vendor` is dead weight today, deliberately: the agent has no vendor
-tool. It is there so that adding one cannot quietly hand a model the supplier
-list — the declaration has to be removed on purpose rather than forgotten into
-existence.
-
-### The red-team suite lost a channel, and its tripwire had gone stale
-
-`test_agent_red_team.py` named three supplier-controlled channels, one of them
-the filename. Withholding it closes that channel rather than defending it, which
-is worth more than the attacks through it: the surviving two are open because the
-agent has to *read* the evidence, and a filename was never evidence. The attack
-that arrived through it moved to `detail`, since what it actually tested was a
-claim about ownership.
-
-The tripwire that is supposed to notice this did not. It computed the agent's
-readable surface from sensitivity alone — a second implementation of the
-projection's rule rather than the rule itself — so it went on naming the
-filename as reachable for a projection that had stopped emitting it, and the
-suite stayed green. It now asks the same predicate `agent/tools.py` projects
-through. This is the fourth time in this project a declaration has drifted from
-its only reader; it is the reason tests here derive from the mapper wherever
-they can.
+Six mutations: the agent shown identities again, one tool forgetting to pass the
+flag, each of the three columns losing its declaration, and the projection
+ignoring the flag entirely. Each was killed by at least one test. Two of the six
+initially reported as surviving, which turned out to be the mutation harness
+missing its anchor after a reformat rather than a gap -- worth recording because
+a mutation that does not apply looks exactly like a mutation that survived.
 
 ### What still reaches a model tier, stated plainly
 
@@ -302,9 +204,18 @@ authorisation hole.
 It fails closed. An absent GUC reads as `''` on a recycled connection rather
 than NULL, hence the `nullif`, and a NULL role array permits nothing.
 
-The rule now exists in two languages, so a test attempts all twenty-four
+The rule now exists in two languages, so a test attempts all thirty-two
 combinations of held roles and decisions that `authorise()` distinguishes and
 compares Postgres's verdict with the domain function's.
+
+Fourteen mutations of the policies and grants -- the worker permitted to write a
+human decision, `may_decide` stopped failing closed, row-level security switched
+off entirely -- were each killed by at least one test. The first pass killed only
+nine, and all five survivors were real gaps rather than bad mutations. The worst
+was a case named "one owner of two" whose two exception codes turned out to be
+owned by the same role, so a `may_decide` weakened to "owns at least one of
+them" passed it: the test had never tested what its name claimed. The comment
+recording that sits on the case in `test_two_roles.py`.
 
 ### The ledger cites what it moves
 

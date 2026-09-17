@@ -125,6 +125,7 @@ ignore = ["B008"]      # FastAPI's Depends() in defaults is the documented idiom
 "scripts/check_eval.py" = ["T201"]
 "scripts/reconcile_ledger.py" = ["T201"]
 "scripts/role_probe.py" = ["T201"]
+"scripts/load_test.py" = ["T201", "E402", "S101"]
 # Same reasoning: a demo that printed nothing would demo nothing. E402 is
 # unavoidable here because the repo root has to be on sys.path before the
 # fixture generator can be imported.

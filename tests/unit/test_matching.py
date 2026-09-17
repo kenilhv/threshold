@@ -395,7 +395,14 @@ def test_every_exception_code_is_reachable() -> None:
     raised: set[ExceptionCode] = set()
     for case in CASES:
         raised |= {e.code for e in three_way_match(case.invoice, case.po).exceptions}
-    assert raised == set(ExceptionCode)
+    # `checks_incomplete` is raised only when a skip would otherwise leave the
+    # invoice auto-approved, and every case in CASES raises something else, so
+    # none of them reaches it. Its own tests above are where it is exercised;
+    # listing it here would mean weakening a CASES entry to produce it.
+    assert raised == set(ExceptionCode) - {ExceptionCode.CHECKS_INCOMPLETE}
+    assert ExceptionCode.CHECKS_INCOMPLETE in {
+        e.code for e in three_way_match(invoice(lines=()), order()).exceptions
+    }, "reachable, and reached by the test above"
 
 
 def test_every_exception_carries_its_routing() -> None:
@@ -455,18 +462,49 @@ def test_line_pairs_are_recorded() -> None:
     assert outcome.line_pairs == ((1, 1), (2, 2))
 
 
-def test_an_invoice_with_no_line_items_records_that_nothing_was_compared() -> None:
-    """The dangerous silence.
+def test_an_invoice_with_no_line_items_is_not_auto_approved() -> None:
+    """The dangerous silence, and the two years it took to stop being silent.
 
     Before line-item extraction existed the matcher received zero lines and
     reported a clean match, because there was nothing to disagree with. An
     invoice that was never compared must not read the same as one that was
     compared and passed.
+
+    This test said exactly that in its docstring, and then asserted
+    `not outcome.exceptions` -- which is the disposition reading the same. A
+    note went into `skipped_checks`, nothing read `skipped_checks`, and
+    `_disposition_for(())` returns `auto_approve` on an empty tuple. So an
+    invoice for 99,999.99 whose lines could not be read auto-approved against a
+    220.80 order, and was paid without a person seeing it.
+
+    Found by the M9 threat-model review. The assertion is now what the
+    docstring always meant.
     """
     outcome = three_way_match(invoice(lines=()), order())
-    assert not outcome.exceptions
+
+    assert outcome.disposition is Disposition.NEEDS_REVIEW
+    assert [e.code for e in outcome.exceptions] == [ExceptionCode.CHECKS_INCOMPLETE]
     assert outcome.skipped_checks
     assert "no line items" in outcome.skipped_checks[0]
+    # The reviewer is told what was not compared, not merely that something
+    # was not: the skip's own sentence is carried into the detail.
+    assert "no line items" in outcome.exceptions[0].detail
+
+
+def test_a_skipped_check_does_not_pile_on_when_something_else_already_fired() -> None:
+    """The narrowness of the rule above, asserted so it cannot widen by accident.
+
+    `checks_incomplete` exists to stop a skip producing a *clean* result. An
+    invoice with no purchase order on file also skips price matching, and
+    `po_not_found` already says why in terms a reviewer can act on. A second row
+    saying "also, some of this was not compared" is noise in a queue whose
+    legibility is the product.
+    """
+    outcome = three_way_match(invoice(po_number=None), None)
+
+    assert outcome.skipped_checks, "this case has to skip something to be a test of skipping"
+    assert ExceptionCode.CHECKS_INCOMPLETE not in {e.code for e in outcome.exceptions}
+    assert outcome.disposition is not Disposition.AUTO_APPROVE
 
 
 class TestPaymentDetailComparison:

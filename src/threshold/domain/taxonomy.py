@@ -103,6 +103,10 @@ class ExceptionCode(StrEnum):
 
     # --- we are not confident enough to act --------------------------------
     LOW_CONFIDENCE_FIELD = "low_confidence_field"
+    #: A control did not run. Distinct from every code above, which say that a
+    #: control ran and found something: this one says the evidence for a clean
+    #: result is missing rather than present.
+    CHECKS_INCOMPLETE = "checks_incomplete"
 
     # --- fraud shapes ------------------------------------------------------
     BANK_DETAILS_CHANGED = "bank_details_changed"
@@ -245,6 +249,19 @@ TAXONOMY: Final[dict[ExceptionCode, ExceptionSpec]] = {
         owner=OwnerRole.AP_CLERK,
         sla_hours=24,
         summary="A field the decision depends on was not read confidently enough to rely on.",
+    ),
+    ExceptionCode.CHECKS_INCOMPLETE: ExceptionSpec(
+        code=ExceptionCode.CHECKS_INCOMPLETE,
+        # REVIEW rather than BLOCK: the invoice may be perfectly good, and
+        # usually is. What is missing is the evidence that it is, and the
+        # response to missing evidence is a person looking rather than a refusal.
+        severity=Severity.REVIEW,
+        # The clerk's, because the fix is almost always to the reading of the
+        # document rather than to the commercial terms: re-extract, or key the
+        # lines by hand.
+        owner=OwnerRole.AP_CLERK,
+        sla_hours=24,
+        summary="A control did not run, so a clean result would not mean this invoice is clean.",
     ),
     ExceptionCode.BANK_DETAILS_CHANGED: ExceptionSpec(
         code=ExceptionCode.BANK_DETAILS_CHANGED,

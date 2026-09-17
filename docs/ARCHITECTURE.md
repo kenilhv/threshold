@@ -589,6 +589,21 @@ for real documents with a human-made answer key. See D-028.
 
 ---
 
+## What an attacker can do
+
+Enumerated, with the attacks that succeed listed alongside the ones that do not:
+[`THREAT-MODEL.md`](THREAT-MODEL.md). It covers six adversaries -- a supplier,
+an insider, a compromised worker, a compromised API, a compromised console and
+whoever holds the database credentials -- and says for each what is bounded, by
+what, and what is not.
+
+It is worth reading for the section on a compromised worker in particular. That
+process parses documents strangers sent, so it is the one most likely to be
+taken over, and it can still cause an invoice to be paid. What it cannot do is
+choose who receives the money.
+
+---
+
 ## Running this in a cloud
 
 | Local | AWS | Code delta |

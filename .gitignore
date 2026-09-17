@@ -16,3 +16,12 @@ node_modules/
 
 # smoke-test scratch
 .smoke-invoice.pdf*
+
+# Terraform's provider cache and state. The lock file is committed on purpose:
+# it pins the provider version that `terraform validate` ran against, and a
+# validation against an unpinned provider proves less each week.
+infra/aws/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+!*.tfvars.example

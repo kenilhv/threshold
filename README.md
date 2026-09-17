@@ -15,20 +15,26 @@ show where that line is and why it sits there.
 > idempotently — and the money is written into a double-entry ledger Postgres
 > will not let you unbalance.
 >
-> Sprints M0 through M8 are done, and M9 all but its last piece: every route
-> now knows who is asking; the application no longer connects to Postgres as a
-> superuser, which it had since the first commit; the API and the worker hold a
-> role each, so the process that parses documents strangers sent cannot record
-> that a person approved one; and the columns that name a person or a company
-> are withheld from the agent. The written threat model remains. M10 (Terraform,
-> load test) is not started.
+> All eleven sprints are done. M9 was the security one: every route now knows
+> who is asking; the application no longer connects to Postgres as a superuser,
+> which it had since the first commit; the API and the worker hold a role each,
+> so the process that parses documents strangers sent cannot record that a
+> person approved one; the columns that name a person or a company are withheld
+> from the agent; and the threat model is written down. M10 is Terraform that CI
+> validates and nothing applies, and measured numbers from a load test rather
+> than quoted ones.
+>
+> Writing that threat model is what found the worst defect in the project: an
+> invoice whose line items could not be read skipped every comparison and
+> auto-approved. It is fixed, and `docs/THREAT-MODEL.md` says how it survived
+> four milestones.
 >
 > **To see it working**, in order:
 >
 > ```bash
 > make up          # the whole stack, waits until each part is actually serving
 > make demo-match  # four invoices, four different outcomes, with the reason for each
-> make smoke       # 41 checks against the running system, end to end
+> make smoke       # 51 checks against the running system, end to end
 > ```
 >
 > Then open <http://localhost:3000> and sign in as `buyer` / `buyer`. The front
@@ -204,6 +210,11 @@ Automation is opt-in per rule.
 Full reasoning, including what is deliberately *not* distributed and why:
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+What an attacker can and cannot do to it — including the attacks that *work*,
+and what bounds the damage: [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md).
+Several entries in it were found by running them against this schema as the
+restricted role, not by imagining them.
+
 ---
 
 ## Where things are
@@ -221,7 +232,7 @@ console/        the operator console (Next.js, back-end for front-end)
 evals/          the extraction evaluation harness and its committed baseline
 migrations/     Alembic, 8 revisions, each reversible and proved so
 infra/local/    compose, the Keycloak realm, Prometheus rules, the Grafana dashboard
-docs/           ARCHITECTURE.md, DECISIONS.md (34 records), 7 runbooks
+docs/           ARCHITECTURE.md, DECISIONS.md (37 records), THREAT-MODEL.md, 7 runbooks
 tests/unit/     690 tests, no stack required
 tests/integration/  161 tests, requires `make up`
 ```
@@ -332,9 +343,10 @@ reason is stated where it happens rather than implied.
       idempotency key, derived from the approval decision the payment row is
       also unique on. Building it turned up that the schema could say an invoice
       was blocked and could not say for how much.
-- [ ] **M9 — least privilege, row-level security, withheld identities, written
-      threat model.** Three of four increments done.
-      *Done:* the two document reads that had answered anybody since M1 now
+- [x] **M9 — least privilege, row-level security, withheld identities, written
+      threat model.** Done, in four increments.
+      *Done:* the two document reads that had answered anybody -- one since M1,
+      one since M3 -- now
       require a token, and a test walks every route so the next one cannot
       forget. No process connects as a superuser or an owner any more; the
       runtime roles hold table-by-table grants, the record is `SELECT`+`INSERT`,
@@ -369,20 +381,58 @@ reason is stated where it happens rather than implied.
       control. Closing the filename channel also cost the red-team suite one of
       its three attack surfaces, and exposed that its tripwire had been
       recomputing the projection's rule instead of asking it.
-      *Not done:* the written threat model. The classification layer the rest
-      builds on exists and is load bearing: every column declares a
-      sensitivity, an undeclared one is treated as restricted, and the review
-      projection is derived from the mapper rather than from an allowlist. What
-      is missing is the threat model written down where it can be argued
-      with — the one deliverable of this milestone that is prose rather than
-      code, and the one that decides whether any of the above was aimed at the
-      right thing.
-- [ ] **M10 — Terraform, load test, measured numbers.** Not started, and the
-      most deferrable: it is the milestone that describes deployment rather than
-      behaviour. The performance numbers this system does have were measured
-      when they mattered — histogram buckets from real distributions, the
-      constraint trigger's 0.285 ms, the alert's detection latency timed with
-      `make demo-alert` — rather than collected at the end as an exercise.
+      Finally the threat model itself: [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md),
+      six adversaries, with the attacks that succeed listed beside the ones that
+      do not. It was then reviewed the same way the code is — three readers
+      checking all 117 claims against the source, returning 20 problems — which
+      is how the auto-approval hole above was found. A document that cites its
+      evidence can be checked, and one that cannot is decoration.
+- [x] **M10 — Terraform, load test, measured numbers.** `infra/aws` describes
+      the deployment in Terraform that `make tf-validate` checks and nothing
+      ever applies: spending money to host a demo proves less than the interface
+      that makes the move a configuration change. Writing it corrected a claim
+      this README had carried since M0 — that the job table becomes SQS behind
+      an interface — which is true of the interface and false of the
+      guarantees, since enqueue happens inside the transaction that writes the
+      row the job is about. `infra/aws/README.md` has the argument.
+      `make load-test` measures the numbers below. It also found the defect
+      described under M9: writing down what auto-approval actually requires is
+      what exposed that an invoice with no readable line items was skipping
+      every comparison and auto-approving.
+
+---
+
+## Measured, on a laptop
+
+`make load-test` submits generated invoices and measures two things separately,
+because the interesting latency here is not the HTTP request: `POST
+/v1/documents` stores bytes and enqueues, and the work happens afterwards
+through three more jobs.
+
+| | 60 invoices, 8 concurrent | 150 invoices, 16 concurrent |
+|---|---|---|
+| accept (`POST` → 202), p50 | 121 ms | 168 ms |
+| accept, p95 | 214 ms | 655 ms |
+| received → matched, p50 | 2.7 s | 5.6 s |
+| received → matched, p95 | 2.9 s | 6.9 s |
+| end to end | 14.9 invoices/s | 14.7 invoices/s |
+
+Read the shape rather than the numbers. Throughput is flat across a 2.5×
+increase in offered load, which is what a queue is for: the submitter cannot
+push the pipeline faster than one worker drains it, and the backlog shows up as
+settle latency rather than as errors or refusals. Accept latency degrading under
+concurrency while throughput holds is the same story from the other end.
+
+Every figure is a floor. This runs against Docker Desktop on a laptop, sharing
+a CPU with Postgres, MinIO, Keycloak, Grafana, Tempo and Prometheus, against one
+worker — `worker_desired_count` defaults to 1 in the Terraform for a reason the
+threat model explains. Nothing was tuned for the run; a load test whose first
+act is to raise the pool size is measuring the tuning.
+
+Settle latency is measurable at all because migration 0013 made
+`audit_event.occurred_at` a real clock: it had been `now()`, which is the
+transaction's start time, so two events written by one transaction shared a
+timestamp to the microsecond.
 
 ---
 
@@ -399,8 +449,18 @@ Nothing here is written to be local-only. The differences are two:
 | Env files | Secrets Manager |
 | Keycloak | Cognito, or an existing IdP |
 
-The queue driver and the secret source are the only two places the code paths
-genuinely differ, and both sit behind an interface. Terraform describing the AWS
-shape is validated in CI from M10 and deliberately never applied — spending
-money to host a demo proves less than the interface that makes it a
-configuration change.
+Terraform describing the AWS shape lives in [`infra/aws`](infra/aws), is
+validated by `make tf-validate` and CI, and is deliberately never applied:
+spending money to host a demo proves less than the interface that makes the move
+a configuration change.
+
+One row of that table was wrong for nine milestones, and writing the Terraform
+is what showed it. The queue driver does sit behind an interface — `Queue` and
+`ReapableQueue` are Protocols — but swapping it for SQS is not free, because
+enqueue happens *inside the transaction that writes the row the job is about*.
+With SQS the send is outside that transaction, so a committed document can have
+no message and a message can exist for a row that rolled back; recovering that
+is a transactional outbox, which is more moving parts than the table it
+replaces. `uq_job_dedupe_key` and a replayable dead-letter table are two more
+guarantees the swap would spend. So the Terraform sizes RDS for the queue as
+well as the ledger, and lists SQS as a decision somebody would make on purpose.

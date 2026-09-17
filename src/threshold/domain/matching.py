@@ -566,6 +566,55 @@ def _outcome(
     skipped: list[str],
     policy: TolerancePolicy,
 ) -> MatchOutcome:
+    """Assemble the outcome, and refuse to call an incomplete match a clean one.
+
+    `skipped_checks` existed from M4 and was read by nobody. Every site that
+    appends to it already knew what it meant -- the one for an invoice with no
+    line items says so outright: "Silence here would be indistinguishable from a
+    clean three-way match, which is the worst available outcome: an invoice that
+    was never really compared, reported as compared and found fine."
+
+    It then produced exactly that. A note in `skipped_checks` raises no
+    exception, `_disposition_for(())` returns `auto_approve` on an empty tuple,
+    and an invoice for 99,999.99 whose lines could not be read was paid against
+    a 220.80 order without a person seeing it. Found by the M9 threat-model
+    review, reproduced against the real matcher, and never reached in the demo
+    data -- `skipped_checks` was empty on all 4,066 match results, which is why
+    it stayed invisible.
+
+    So a skipped check now raises `CHECKS_INCOMPLETE`, at REVIEW severity. The
+    system's stated default is to do nothing and ask a human; a control that did
+    not run is the clearest case there is for asking.
+
+    Raised once however many checks were skipped: the codes are a taxonomy of
+    *kinds* of problem, and "some of this was not checked" is one kind. Each
+    skipped check keeps its own sentence in `skipped_checks`, and the detail
+    carries them.
+
+    Raised only when nothing else fired, which is narrower than it first looks
+    and is the whole point. Its job is to stop a skip producing a *clean*
+    result; when the invoice is already blocked or already needs review, that
+    job is done and a second row saying "also, some of this was not compared"
+    is noise in a queue whose legibility is the product. An invoice with no
+    purchase order on file, for instance, skips price matching for a reason
+    `po_not_found` already states plainly.
+
+    `skipped_checks` is still recorded either way, and the console still shows
+    it. What changes here is only the disposition.
+    """
+    if skipped and _disposition_for(tuple(problems)) is Disposition.AUTO_APPROVE:
+        problems = [
+            *problems,
+            _raise(
+                ExceptionCode.CHECKS_INCOMPLETE,
+                (
+                    "this invoice was not fully compared, so nothing here says it is "
+                    + ("correct: " if len(skipped) == 1 else "correct. ")
+                    + "; ".join(skipped)
+                ),
+            ),
+        ]
+
     ordered = tuple(
         sorted(
             problems,

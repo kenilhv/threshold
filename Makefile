@@ -110,6 +110,25 @@ check-alerts: ## Prove every alert rule fires when it should, and stays quiet wh
 .PHONY: verify
 verify: lint check-alerts test eval-check ## What CI runs on every commit
 
+# ------------------------------------------------------------ deployment ---
+
+# Through the pinned image rather than a local install: nobody should have to
+# install Terraform to run this repository's gate, and the version that
+# validates in CI should be the version that validates here.
+TERRAFORM = docker run --rm -v "$(CURDIR)/infra/aws:/w" -w /w hashicorp/terraform:1.9
+
+.PHONY: tf-validate
+tf-validate: ## Check the AWS Terraform is well-formed. Never applies anything.
+	$(TERRAFORM) fmt -check -diff
+	$(TERRAFORM) init -backend=false -input=false
+	$(TERRAFORM) validate
+
+# ------------------------------------------------------------- load test ---
+
+.PHONY: load-test
+load-test: ## Measure accept and settle latency against the running stack
+	python scripts/load_test.py $(if $(count),--count $(count),) $(if $(concurrency),--concurrency $(concurrency),)
+
 # ----------------------------------------------------------------- queue ---
 
 .PHONY: queue-stats
