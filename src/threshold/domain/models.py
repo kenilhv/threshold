@@ -61,14 +61,16 @@ class Vendor(Base):
 
     id: Mapped[uuid.UUID] = _pk()
 
-    # INTERNAL rather than PUBLIC: the vendor's identity is exactly what the
-    # review projection pseudonymises, because knowing who is billing is enough
-    # to infer a company's suppliers, costs and negotiating position.
+    # INTERNAL rather than PUBLIC, and an identity: knowing who is billing is
+    # enough to infer a company's suppliers, costs and negotiating position.
+    # Staff see these; a model is not shown them. Nothing reads a vendor row on
+    # the agent's behalf today, and the mark is here so that adding a tool which
+    # does cannot quietly hand a model the supplier list.
     legal_name: Mapped[str] = mapped_column(
-        String(300), nullable=False, info=classify(Sensitivity.INTERNAL)
+        String(300), nullable=False, info=classify(Sensitivity.INTERNAL, identity=True)
     )
     display_name: Mapped[str] = mapped_column(
-        String(300), nullable=False, info=classify(Sensitivity.INTERNAL)
+        String(300), nullable=False, info=classify(Sensitivity.INTERNAL, identity=True)
     )
 
     # Stable, human-meaningless supplier number. Safe to show a reviewer because
@@ -192,9 +194,15 @@ class AuditEvent(Base):
 
     id: Mapped[uuid.UUID] = _pk()
 
+    #: `clock_timestamp()`, not `now()`. Postgres's `now()` is the transaction's
+    #: start time and does not advance within it, so two events written by one
+    #: transaction -- `match.decided` and the `invoice.auto_approved` it causes,
+    #: for instance -- shared a timestamp to the microsecond and could not be
+    #: ordered against each other. In this table the order between them *is* the
+    #: causality. See migration 0013.
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=func.now(),
+        server_default=func.clock_timestamp(),
         nullable=False,
         info=classify(Sensitivity.PUBLIC),
     )
@@ -285,10 +293,14 @@ class Document(Base):
         String(500), nullable=False, info=classify(Sensitivity.PUBLIC)
     )
 
-    #: As supplied. INTERNAL because filenames routinely leak vendor names,
-    #: amounts and project codes.
+    #: As supplied, by a stranger. INTERNAL because filenames routinely leak
+    #: vendor names, amounts and project codes -- and an identity, so the agent
+    #: never sees it. That is worth more than the privacy: this string is
+    #: attacker-controlled, and it was one of the injection channels
+    #: `test_agent_red_team.py` fires through. Withholding it removes the
+    #: channel rather than defending it.
     original_filename: Mapped[str] = mapped_column(
-        String(400), nullable=False, info=classify(Sensitivity.INTERNAL)
+        String(400), nullable=False, info=classify(Sensitivity.INTERNAL, identity=True)
     )
     content_type: Mapped[str] = mapped_column(
         String(120), nullable=False, info=classify(Sensitivity.PUBLIC)
@@ -666,9 +678,11 @@ class PurchaseOrder(Base):
     )
 
     #: Who to route a price or quantity dispute to. INTERNAL rather than PUBLIC:
-    #: it identifies an employee.
+    #: it identifies an employee, which is also why the agent is not shown it.
+    #: Routing is by role (`domain/taxonomy.py`), never by this address, so
+    #: withholding it costs the triager nothing.
     buyer_email: Mapped[str | None] = mapped_column(
-        String(320), nullable=True, info=classify(Sensitivity.INTERNAL)
+        String(320), nullable=True, info=classify(Sensitivity.INTERNAL, identity=True)
     )
 
     ordered_at: Mapped[datetime] = mapped_column(

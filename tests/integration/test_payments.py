@@ -563,7 +563,7 @@ class TestPostgresEnforcesTheBalance:
         committed transaction summing to 700.
         """
         async with sessions() as session:
-            settled = LedgerTransaction(kind="accrual", currency="EUR", currency_exponent=2)
+            settled = LedgerTransaction(kind="opening", currency="EUR", currency_exponent=2)
             session.add(settled)
             await session.flush()
             # Held as plain values: a rollback expires every object in the
@@ -575,7 +575,7 @@ class TestPostgresEnforcesTheBalance:
                 )
             await session.commit()
 
-            thief = LedgerTransaction(kind="accrual", currency="EUR", currency_exponent=2)
+            thief = LedgerTransaction(kind="opening", currency="EUR", currency_exponent=2)
             session.add(thief)
             await session.flush()
             thief_id = thief.id

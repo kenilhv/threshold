@@ -5,6 +5,355 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-036 — Identity columns are withheld from the agent, and the alias scheme was abandoned
+
+**Date:** 2026-09-17 · **Status:** accepted
+
+Since M6 this repository has promised a pseudonymisation scheme. The
+classification module said INTERNAL data was "pseudonymised for outside review,
+with ratios preserved so a 54% overbill still reads as 54%". The README's M9
+entry promised "a stable-alias scheme that preserves the shape of a judgment".
+`scripts/seed.py` carried an HMAC key with the comment "The real one is a
+per-deployment secret; see M9".
+
+None of it existed, and this increment does not build it. What it builds is
+smaller and, unlike the scheme, useful: the columns that name a person or a
+company are marked on the column and dropped from the agent's projection.
+
+### Why the scheme died
+
+It was designed first — HMAC-SHA256 over a kind-prefixed value, a truncated
+token, a per-deployment key, a `Settings` field with no default so that every
+process refuses to start without one. Then it was attacked, and it did not
+survive contact with the code it was supposed to protect.
+
+**There is no consumer.** Every promise was about an *outside reviewer* who
+still has to judge. No such reviewer exists. `project()` has exactly two callers:
+the agent's four tools, and the console's vendor view. The console must show
+real names — a review queue that will not say who is billing is not a review
+queue — so the scheme could only ever apply to the agent.
+
+**For the agent, an alias carries exactly what dropping carries.** The agent
+never reads a vendor row: there is no vendor tool, and adding one would be a
+security change with its own test. A stable alias of a buyer's email address
+buys nothing, because routing is by role and never by address. A stable alias of
+a filename buys less than nothing: it is a string an attacker chose, and one of
+the injection channels the red-team suite fires through. `V-7f3a` and *absent*
+are the same amount of information to a triager that does not read vendors.
+
+**A shared key over low-entropy inputs is a liability, not a control.** Vendor
+names, employee addresses and `INV-<n>.pdf` filenames are enumerable. Anyone
+holding the key and the emitted aliases recovers the plaintext in one pass —
+and the emitted aliases are, by the scheme's own design, in the hands of the
+third party. A leaked key retroactively de-pseudonymises everything ever sent,
+and no rotation un-sends it. Rotation also breaks the stability that was the
+whole point.
+
+**Every environment but production would have run with a public key.** The
+compose file would have carried a well-known value, CI sets no `THRESHOLD_`
+variables, and the test conftest would have set a fixed one. "Aliased with a
+key everybody has" is indistinguishable from un-aliased, which is the exact
+objection that ruled out making the key optional.
+
+Dropping needs no key, so none of that applies.
+
+### What was built
+
+`classify(level, *, identity=True)` marks a column. The key is omitted from
+`info` when false, so almost every column is declared exactly as before.
+`project(row, *, identities=False)` drops the marked ones, and the agent's tools
+pass it. Three columns are marked today: `Vendor.legal_name` and
+`display_name`, `Document.original_filename`, `PurchaseOrder.buyer_email`.
+
+Identity is a second axis rather than a fourth sensitivity level, because what
+separates these columns from other INTERNAL ones is not how sensitive they are
+but what they are for. A `PUBLIC` identity is a contradiction and raises; a
+`RESTRICTED` one is redundant and raises.
+
+Marking `Vendor` is dead weight today, deliberately: the agent has no vendor
+tool. It is there so that adding one cannot quietly hand a model the supplier
+list — the declaration has to be removed on purpose rather than forgotten into
+existence.
+
+### The red-team suite lost a channel, and its tripwire had gone stale
+
+`test_agent_red_team.py` named three supplier-controlled channels, one of them
+the filename. Withholding it closes that channel rather than defending it, which
+is worth more than the attacks through it: the surviving two are open because the
+agent has to *read* the evidence, and a filename was never evidence. The attack
+that arrived through it moved to `detail`, since what it actually tested was a
+claim about ownership.
+
+The tripwire that is supposed to notice this did not. It computed the agent's
+readable surface from sensitivity alone — a second implementation of the
+projection's rule rather than the rule itself — so it went on naming the
+filename as reachable for a projection that had stopped emitting it, and the
+suite stayed green. It now asks the same predicate `agent/tools.py` projects
+through. This is the fourth time in this project a declaration has drifted from
+its only reader; it is the reason tests here derive from the mapper wherever
+they can.
+
+### What still reaches a model tier, stated plainly
+
+Invoice numbers, purchase-order numbers, amounts and the supplier's own line
+descriptions, inside the free text of `MatchException.detail`, `breach` and
+`MatchResult.skipped_checks`. They are the evidence the triager reasons about,
+and removing them would be masking that destroys the reviewer's task — the
+failure the classification module's own docstring warns about.
+
+So the `TriageRequest` docstring no longer says it "can be handed to a third
+party's API without a second review". It says what is in it.
+
+### If an outside-review export is ever built
+
+The alias key belongs to that job's settings, not to the API, the worker and
+Alembic. Until something is exported, a key those three processes must hold is a
+secret with no purpose and three places to leak from.
+
+---
+
+## D-036 — Identity columns are withheld from the agent, and the alias scheme was abandoned
+
+**Date:** 2026-09-17 · **Status:** accepted
+
+Since M6 this repository has promised a pseudonymisation scheme. The
+classification module said INTERNAL data was "pseudonymised for outside review,
+with ratios preserved so a 54% overbill still reads as 54%". The README's M9
+entry promised "a stable-alias scheme that preserves the shape of a judgment".
+`scripts/seed.py` carried an HMAC key with the comment "The real one is a
+per-deployment secret; see M9".
+
+None of it existed, and this increment does not build it. What it builds is
+smaller and, unlike the scheme, useful: the columns that name a person or a
+company are marked on the column and dropped from the agent's projection.
+
+### Why the scheme died
+
+It was designed first — HMAC-SHA256 over a kind-prefixed value, a truncated
+token, a per-deployment key, a `Settings` field with no default so that every
+process refuses to start without one. Then it was attacked, and it did not
+survive contact with the code it was supposed to protect.
+
+**There is no consumer.** Every promise was about an *outside reviewer* who
+still has to judge. No such reviewer exists. `project()` has exactly two callers:
+the agent's four tools, and the console's vendor view. The console must show
+real names — a review queue that will not say who is billing is not a review
+queue — so the scheme could only ever apply to the agent.
+
+**For the agent, an alias carries exactly what dropping carries.** The agent
+never reads a vendor row: there is no vendor tool, and adding one would be a
+security change with its own test. A stable alias of a buyer's email address
+buys nothing, because routing is by role and never by address. A stable alias of
+a filename buys less than nothing: it is a string an attacker chose, and one of
+the injection channels the red-team suite fires through. `V-7f3a` and *absent*
+are the same amount of information to a triager that does not read vendors.
+
+**A shared key over low-entropy inputs is a liability, not a control.** Vendor
+names, employee addresses and `INV-<n>.pdf` filenames are enumerable. Anyone
+holding the key and the emitted aliases recovers the plaintext in one pass —
+and the emitted aliases are, by the scheme's own design, in the hands of the
+third party. A leaked key retroactively de-pseudonymises everything ever sent,
+and no rotation un-sends it. Rotation also breaks the stability that was the
+whole point.
+
+**Every environment but production would have run with a public key.** The
+compose file would have carried a well-known value, CI sets no `THRESHOLD_`
+variables, and the test conftest would have set a fixed one. "Aliased with a
+key everybody has" is indistinguishable from un-aliased, which is the exact
+objection that ruled out making the key optional.
+
+Dropping needs no key, so none of that applies.
+
+### What was built
+
+`classify(level, *, identity=True)` marks a column. The key is omitted from
+`info` when false, so almost every column is declared exactly as before.
+`project(row, *, identities=False)` drops the marked ones, and the agent's tools
+pass it. Three columns are marked today: `Vendor.legal_name` and
+`display_name`, `Document.original_filename`, `PurchaseOrder.buyer_email`.
+
+Identity is a second axis rather than a fourth sensitivity level, because what
+separates these columns from other INTERNAL ones is not how sensitive they are
+but what they are for. A `PUBLIC` identity is a contradiction and raises; a
+`RESTRICTED` one is redundant and raises.
+
+Marking `Vendor` is dead weight today, deliberately: the agent has no vendor
+tool. It is there so that adding one cannot quietly hand a model the supplier
+list — the declaration has to be removed on purpose rather than forgotten into
+existence.
+
+### The red-team suite lost a channel, and its tripwire had gone stale
+
+`test_agent_red_team.py` named three supplier-controlled channels, one of them
+the filename. Withholding it closes that channel rather than defending it, which
+is worth more than the attacks through it: the surviving two are open because the
+agent has to *read* the evidence, and a filename was never evidence. The attack
+that arrived through it moved to `detail`, since what it actually tested was a
+claim about ownership.
+
+The tripwire that is supposed to notice this did not. It computed the agent's
+readable surface from sensitivity alone — a second implementation of the
+projection's rule rather than the rule itself — so it went on naming the
+filename as reachable for a projection that had stopped emitting it, and the
+suite stayed green. It now asks the same predicate `agent/tools.py` projects
+through. This is the fourth time in this project a declaration has drifted from
+its only reader; it is the reason tests here derive from the mapper wherever
+they can.
+
+### What still reaches a model tier, stated plainly
+
+Invoice numbers, purchase-order numbers, amounts and the supplier's own line
+descriptions, inside the free text of `MatchException.detail`, `breach` and
+`MatchResult.skipped_checks`. They are the evidence the triager reasons about,
+and removing them would be masking that destroys the reviewer's task — the
+failure the classification module's own docstring warns about.
+
+So the `TriageRequest` docstring no longer says it "can be handed to a third
+party's API without a second review". It says what is in it.
+
+### If an outside-review export is ever built
+
+The alias key belongs to that job's settings, not to the API, the worker and
+Alembic. Until something is exported, a key those three processes must hold is a
+secret with no purpose and three places to leak from.
+
+---
+
+## D-035 — Two runtime roles, and rules the database enforces about who writes what
+
+**Date:** 2026-09-17 · **Status:** accepted
+
+D-034 ended by admitting what a compromised application could still do: it holds
+`INSERT` on `match_result` and `approval_decision` because inserting them is its
+job, so it can forge a consistent chain from the root — evidence, an approval of
+that evidence, a payment for it — and every control added so far passes it,
+because each row agrees with the rows it cites. The reviewers did exactly that
+and drove the real executor to `settled`.
+
+That paragraph treated "the application" as one thing. It is two, and they had
+been trusting each other for no reason other than sharing a connection string.
+
+The **worker** runs a PDF library over bytes a stranger sent. Of everything in
+this system it is the process most likely to be taken over, and it has no
+business recording that a *person* approved anything.
+
+The **API** authenticates people and records what they decide. Traced through
+the code before this was written, it never extracts, matches, pays or posts —
+and issues no `UPDATE` or `DELETE` at all, anywhere.
+
+### The split
+
+`threshold_api` and `threshold_worker` replace `threshold_app`. Both read
+everything. They differ only in what they may write:
+
+| | API | worker |
+|---|---|---|
+| `document`, `idempotency_key` | `INSERT` | read |
+| `extraction`, `match_result`, `match_exception`, `escalation` | read | `INSERT` |
+| `payment`, `ledger_transaction`, `ledger_entry` | read | `INSERT` |
+| `dead_letter` | read | `INSERT` |
+| `job`, `audit_event` | `INSERT` | `INSERT` (+`DELETE` on `job`) |
+| `approval_decision` | `INSERT`, by policy a human's | `INSERT`, by policy `auto_approved` |
+| everything else | read | read |
+| `UPDATE` | none | the 0011 columns only |
+
+A compromised worker can no longer release an invoice the match blocked, because
+that release is a human decision and the row saying so is one it may not write.
+A compromised API cannot forge from the root, because it cannot manufacture the
+evidence its own decision would be about.
+
+The rules are keyed on `current_user`, which is fixed by the credential the
+process started with. D-034 verified that `SET ROLE` and `SET SESSION
+AUTHORIZATION` are both refused to these roles, so it is not something a
+compromised process can change from SQL.
+
+### Reads are not policed, and that is deliberate
+
+The obvious next step — row-level security on reads, so a buyer sees only the
+buyer's invoices — would be an authorisation bug wearing a privacy control's
+clothes.
+
+`authorise()` requires that the people deciding own *every* open exception on a
+match result. It computes that by reading the exceptions. A read policy that
+hid one exception from a reader would remove its owner from the required set,
+and the effect of hiding a blocking exception from a clerk is that the clerk may
+now approve the invoice alone. Filtering reads would also hide every
+auto-approved invoice from everybody, and let the ledger's balance trigger sum a
+filtered subset of a transaction's postings and find it balanced.
+
+So reads stay open to both roles, and the privacy work that motivated the idea
+goes where it belongs: what leaves the system, which is the next increment.
+
+### What `may_decide()` is honestly for
+
+`may_decide(match_result, decision)` is `domain/approval.py::authorise()` written
+again in SQL. `ApprovalService` sets `threshold.actor_roles` with
+`set_config(..., true)` — transaction-local, because a session-level `SET` would
+hand the next request off the pool whoever the last one was — immediately before
+it inserts.
+
+A compromised API can set that value to anything. **This is therefore not a
+defence against a compromised API, and nothing in this repository should say it
+is.** It is a defence against this codebase: a route added next year that
+inserts a decision without having asked `authorise()` is refused by Postgres,
+and a bug that drops the check is a failing test rather than a quiet
+authorisation hole.
+
+It fails closed. An absent GUC reads as `''` on a recycled connection rather
+than NULL, hence the `nullif`, and a NULL role array permits nothing.
+
+The rule now exists in two languages, so a test attempts all twenty-four
+combinations of held roles and decisions that `authorise()` distinguishes and
+compares Postgres's verdict with the domain function's.
+
+### The ledger cites what it moves
+
+Two confirmed review findings were about the ledger: a perfectly balanced
+transaction referring to nothing, and one with an invented kind, an invented
+account and an invented currency. Both committed. Balanced is not true.
+
+Kinds and accounts are now closed vocabularies. A transaction cites exactly one
+payment or match result unless it is an `opening` balance, which the worker may
+not post. The deferred trigger that checks the sum also checks that what was
+moved is what the cited row says, in that row's currency. A payment can be
+submitted, settled or failed in the ledger at most once each.
+
+`ck_ledger_transaction_cites_something` is a constraint over rows that already
+exist, and 0012 refuses to run if any violate it rather than deleting them or
+adding the constraint `NOT VALID`. A transaction with no subject is money moved
+for a reason nobody recorded, and a migration is the worst place to decide what
+to do about it. `scripts/reconcile_ledger.py` is the better place: it shows the
+rows and removes one only when told which, printing the trial balance either
+side. Removal rather than a reversing entry, because a reversal would itself
+have no subject and violate the same rule — there is no appending your way out
+of a row that refers to nothing.
+
+One such row existed on the machine this was written on: an EUR 700 accrual left
+behind by the M8 reproduction of the balance-trigger hole.
+
+### What is still true of a compromised process
+
+Stated plainly, because the value of D-034's version of this section was that it
+did not overclaim.
+
+- A compromised **worker** can still auto-approve a fabricated invoice, because
+  deciding what auto-approves is its job. The payee is still bounded by 0011: a
+  vendor already on file, into that vendor's current account. The amount is not.
+- A compromised **API** can still record that a person approved something,
+  because knowing who the person is is its job. It cannot invent the invoice
+  that person appears to have approved.
+- Either can still write audit rows that lie. Append-only gives non-erasure, not
+  authenticity.
+- Neither can escalate: not superusers, not owners, members of nothing.
+
+The remaining step for the decision path would be a `SECURITY DEFINER` function
+owned by the schema owner, so that the check runs with privileges the caller
+cannot influence at all. That is worth doing and is not done here; what is done
+is the split, which is what turns "the application" from one blast radius into
+two.
+
+---
+
 ## D-034 — The application is not a superuser, and what that does and does not buy
 
 **Date:** 2026-09-17 · **Status:** accepted

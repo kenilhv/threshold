@@ -60,9 +60,18 @@ class TriageRequest:
 
     The four projections are plain dictionaries because that is what
     ``domain/projection.py`` returns and what a model tier would serialise. They
-    have already been through the projection at INTERNAL, so nothing restricted
-    is in here -- which is why this dataclass can be handed to a third party's
-    API without a second review.
+    have been through the projection at INTERNAL with identity columns dropped,
+    so no bank digits, no tax identifier, no vendor name, no buyer's email
+    address and no supplier-chosen filename are in here.
+
+    What *is* in here, stated because the previous version of this docstring
+    said this could "be handed to a third party's API without a second review"
+    and that was too comfortable: the free text of each exception's ``detail``
+    and ``breach``, and ``skipped_checks``. Those carry the invoice's own line
+    descriptions, its invoice number, the purchase-order number and amounts,
+    because they are the evidence the triager is reasoning about. They are also
+    supplier-controlled, which is what ``test_agent_red_team.py`` exists to
+    keep honest.
     """
 
     match_result_id: Any

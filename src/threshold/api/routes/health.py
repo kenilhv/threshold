@@ -33,8 +33,9 @@ out of rotation.
 
 Until M9 the database check was `SELECT 1`, and until M9 that was sufficient:
 the application connected as a superuser, so a connection that opened could do
-anything. Since migration 0010 it connects as `threshold_app`, which holds only
-what it was granted, and SQLSTATE 42501 became possible for the first time. The
+anything. Since migration 0010 it connects as a role holding only what it was
+granted -- `threshold_api` since 0012 -- and SQLSTATE 42501 became possible for
+the first time. The
 review of that migration restored a schema without its ACLs and watched this
 endpoint report ready, for ever, above a worker that could not claim a job --
 `SELECT 1` needs no grant.

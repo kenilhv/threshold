@@ -18,6 +18,7 @@ Requires: make up
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -33,6 +34,7 @@ from tests.integration.test_matching import _document_with_extraction, _invoice_
 
 from threshold.adapters.db import dispose_engine, init_engine
 from threshold.adapters.triage.port import TriageRequest
+from threshold.adapters.triage.rules import RuleBasedTriager
 from threshold.config.settings import Settings
 from threshold.domain.jobs import PermanentJobError
 from threshold.domain.matching import Disposition
@@ -644,3 +646,91 @@ class TestTheWholeChainFromDecisionToEscalation:
 
             await session.execute(delete(Document).where(Document.id == document_id))
             await session.commit()
+
+
+class TestTheRequestLeavesIdentitiesBehind:
+    """What a model tier would be sent, checked on a real request.
+
+    `test_projection.py` proves the projection drops identity columns. This
+    proves the triage path uses that projection: the assertion is against the
+    `TriageRequest` the service actually builds from rows in Postgres, not
+    against a projection called by hand.
+    """
+
+    async def test_no_name_address_or_filename_reaches_the_triager(
+        self, sessions: async_sessionmaker[AsyncSession]
+    ) -> None:
+        recorder = _RecordingTriager()
+        async with sessions() as session:
+            result = await make_invoice(
+                session,
+                ExceptionCode.PRICE_VARIANCE,
+                ExceptionCode.BANK_DETAILS_CHANGED,
+                detail="ACME Holdings BV billed above the agreed price",
+            )
+            document_id = result.document_id
+            await session.commit()
+
+            await TriageService(recorder).triage(session, result.id, sessions=sessions)
+            await session.commit()
+
+            filename = (
+                await session.execute(
+                    select(Document.original_filename).where(Document.id == document_id)
+                )
+            ).scalar_one()
+
+        assert recorder.seen is not None, "the triager was never called"
+        payload = repr(dataclasses.asdict(recorder.seen))
+
+        # The vacuity guard first: the value has to exist in the row for its
+        # absence from the request to mean anything.
+        assert filename, "the fixture stored no filename, so nothing was withheld"
+        assert filename not in payload, f"the supplier's filename reached the triager: {filename}"
+        assert "original_filename" not in payload
+
+        assert recorder.seen.document is not None, "the document projection was empty"
+        assert recorder.seen.document["content_type"] == "application/pdf", (
+            "dropping identities took the whole projection with it"
+        )
+
+    async def test_the_evidence_still_arrives(
+        self, sessions: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The other half, and the reason this is a drop rather than a redaction
+        of everything: the triager has to be able to do its job."""
+        recorder = _RecordingTriager()
+        async with sessions() as session:
+            result = await make_invoice(
+                session,
+                ExceptionCode.PRICE_VARIANCE,
+                ExceptionCode.BANK_DETAILS_CHANGED,
+                detail="billed above the agreed price",
+            )
+            await session.commit()
+            await TriageService(recorder).triage(session, result.id, sessions=sessions)
+            await session.commit()
+
+        assert recorder.seen is not None
+        codes = {exception["code"] for exception in recorder.seen.exceptions}
+        assert codes == {"price_variance", "bank_details_changed"}
+        assert any(
+            "billed above the agreed price" in str(exception.get("detail"))
+            for exception in recorder.seen.exceptions
+        ), "the exception detail is the evidence, and it must still be there"
+
+
+class _RecordingTriager:
+    """The real rules tier, with the request kept for inspection."""
+
+    def __init__(self) -> None:
+        self.seen: TriageRequest | None = None
+        self._inner = RuleBasedTriager()
+
+    @property
+    def triager_id(self) -> str:
+        return self._inner.triager_id
+
+    async def triage(self, request: TriageRequest) -> EscalationPacket | None:
+        self.seen = request
+        return await self._inner.triage(request)

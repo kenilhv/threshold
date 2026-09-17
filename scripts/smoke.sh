@@ -112,42 +112,47 @@ check "audit_event rejects UPDATE" "blocked" \
       do \$\$ begin update audit_event set action='tampered' where action='smoke.test'; raise notice 'ALLOWED'; exception when others then raise notice 'blocked'; end \$\$;" 2>&1 \
      | grep -o 'blocked' | head -1)"
 
-# The check above runs as the owner and proves the trigger. This one proves the
-# lock in front of it: the API holds a role that is refused before any trigger
-# is consulted, and cannot switch the trigger off.
+# The check above runs as the owner and proves the trigger. These prove the lock
+# in front of it, and the split behind that.
 #
-# Asked from inside the API container, with the API's own URL, over the network.
-# The first version of the last two used psql inside the postgres container, and
-# proved less than it said: pg_hba trusts loopback there, so those connections
-# succeeded with any password at all. This path authenticates for real, and it
-# is the credential the process actually holds rather than the one the compose
-# file says it should.
-ROLE_PROBE="$(docker compose exec -T api python -c "
-import asyncio, os, asyncpg
-async def refused(c, sql):
-    try:
-        async with c.transaction():
-            await c.execute(sql)
-    except asyncpg.PostgresError as e:
-        return e.sqlstate
-    return 'PERMITTED'
-async def main():
-    c = await asyncpg.connect(os.environ['THRESHOLD_DATABASE_URL'].replace('+asyncpg', ''))
-    r = await c.fetchrow('select current_user u, rolsuper s, rolbypassrls b from pg_roles where rolname = current_user')
-    print('%s super=%s bypassrls=%s' % (r['u'], r['s'], r['b']))
-    print(await refused(c, \"update audit_event set action = 'tampered'\"))
-    print(await refused(c, 'alter table audit_event disable trigger all'))
-    print(await refused(c, \"update payment set amount_minor = amount_minor * 5\"))
-asyncio.run(main())" 2>&1 | tr -d '\r')"
+# `scripts/role_probe.py` runs inside each container, with that process's own
+# credential, over the network. It reports one line per question -- see its
+# docstring, including why it is a file and not shell. The first version of
+# these checks used psql inside the postgres container, where pg_hba trusts
+# loopback: they passed with any password at all.
+API_PROBE="$(docker compose exec -T api python -m scripts.role_probe 2>&1 | tr -d '\r')"
+WORKER_PROBE="$(docker compose exec -T worker python -m scripts.role_probe 2>&1 | tr -d '\r')"
 
-check "the API's database role is not a superuser" "threshold_app super=False bypassrls=False" \
-  "$(echo "$ROLE_PROBE" | sed -n 1p)"
-check "that role is refused UPDATE on audit_event by privilege (42501)" "42501" \
-  "$(echo "$ROLE_PROBE" | sed -n 2p)"
-check "and cannot disable the trigger behind it (42501)" "42501" \
-  "$(echo "$ROLE_PROBE" | sed -n 3p)"
-check "nor change what a payment is for (42501)" "42501" \
-  "$(echo "$ROLE_PROBE" | sed -n 4p)"
+probe() { echo "$1" | awk -v k="$2" '$1 == k { $1 = ""; sub(/^ /, ""); print }'; }
+
+check "the API's database role is not a superuser" "threshold_api super=False bypassrls=False" \
+  "$(probe "$API_PROBE" identity)"
+check "it is refused UPDATE on audit_event by privilege" "42501" \
+  "$(probe "$API_PROBE" audit_update)"
+check "and cannot disable the trigger behind it" "42501" \
+  "$(probe "$API_PROBE" disable_trigger)"
+
+# The split (0012). The API records what people decide and cannot make the
+# evidence; the worker makes the evidence and cannot speak for a person.
+check "the API cannot write a match result" "42501" \
+  "$(probe "$API_PROBE" write_match_result)"
+check "nor change what a payment is for" "42501" \
+  "$(probe "$API_PROBE" payment_amount)"
+# Fail-closed: the probe never says who is deciding, so the row-level policy
+# refuses even the decision this role exists to write.
+check "a decision that does not say who is deciding is refused" "42501" \
+  "$(probe "$API_PROBE" human_decision)"
+
+check "the worker has a database role of its own" "threshold_worker super=False bypassrls=False" \
+  "$(probe "$WORKER_PROBE" identity)"
+check "the worker cannot say a person approved an invoice" "42501" \
+  "$(probe "$WORKER_PROBE" human_decision)"
+check "nor auto-approve what the match blocked" "42501" \
+  "$(probe "$WORKER_PROBE" auto_approve_blocked)"
+
+check "every ledger transaction cites what it moves" "0" \
+  "$(docker compose exec -T postgres psql -U threshold -d threshold -tAc \
+     "select count(*) from ledger_transaction where kind <> 'opening' and num_nonnulls(payment_id, match_result_id) <> 1")"
 
 check "seed loaded 5 purchase orders" "5" \
   "$(docker compose exec -T postgres psql -U threshold -d threshold -tAc 'select count(*) from purchase_order' | tr -d '\r' | head -1)"

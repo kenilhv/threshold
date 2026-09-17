@@ -15,12 +15,13 @@ show where that line is and why it sits there.
 > idempotently — and the money is written into a double-entry ledger Postgres
 > will not let you unbalance.
 >
-> Sprints M0 through M8 are done. M9 is half done: every route now knows who is
-> asking, and the application no longer connects to Postgres as a superuser --
-> which it had since the first commit, and which made every "the database
-> refuses" claim below true of a buggy application and false of a compromised
-> one. Database-enforced write policies, pseudonymisation and the written threat
-> model remain. M10 (Terraform, load test) is not started.
+> Sprints M0 through M8 are done, and M9 all but its last piece: every route
+> now knows who is asking; the application no longer connects to Postgres as a
+> superuser, which it had since the first commit; the API and the worker hold a
+> role each, so the process that parses documents strangers sent cannot record
+> that a person approved one; and the columns that name a person or a company
+> are withheld from the agent. The written threat model remains. M10 (Terraform,
+> load test) is not started.
 >
 > **To see it working**, in order:
 >
@@ -167,11 +168,18 @@ alphabet, not the choice — and the attacks that still get through carry a test
 each asserting what bounds them, rather than a paragraph saying they are
 handled.
 
-**Restricted data never enters a model's context.** Bank details, tax IDs and
-invoice numbers are classified on the column and dropped from the review
-projection rather than hashed, because a hash of a bank number is still a bank
-number to anyone holding a candidate list. The agent sees `bank_changed: true`,
-never the account. It cannot leak what it never held.
+**Restricted data never enters a model's context.** Bank details and tax IDs are
+classified on the column and dropped from the agent's projection rather than
+hashed, because a hash of a bank number is still a bank number to anyone holding
+a candidate list. So are the columns that name somebody: the vendor, the buyer's
+email address, the filename the supplier chose. The agent sees that a
+`bank_details_changed` exception fired, never the account. It cannot leak what
+it never held — and the filename it no longer sees was a string an attacker
+picked, so that is one injection channel closed rather than defended.
+
+Invoice numbers, amounts and the supplier's own line descriptions *do* reach it,
+inside the free text of an exception. They are the evidence it reasons about,
+and `tests/unit/test_agent_red_team.py` treats that text as hostile.
 
 **Money moves through a ledger Postgres will not let you unbalance.** Every
 payment is a set of postings that sum to zero, checked at `COMMIT` by a deferred
@@ -324,14 +332,14 @@ reason is stated where it happens rather than implied.
       idempotency key, derived from the approval decision the payment row is
       also unique on. Building it turned up that the schema could say an invoice
       was blocked and could not say for how much.
-- [ ] **M9 — least privilege, row-level security, pseudonymisation, written
-      threat model.** Two of four increments done.
+- [ ] **M9 — least privilege, row-level security, withheld identities, written
+      threat model.** Three of four increments done.
       *Done:* the two document reads that had answered anybody since M1 now
       require a token, and a test walks every route so the next one cannot
-      forget. The API and worker connect as `threshold_app`, which owns nothing
-      and holds table-by-table grants: the record is `SELECT`+`INSERT`, reference
-      data is `SELECT`, and `UPDATE` exists only on the columns that say how far
-      along a job or a payment is. That last narrowing came from attacking the
+      forget. No process connects as a superuser or an owner any more; the
+      runtime roles hold table-by-table grants, the record is `SELECT`+`INSERT`,
+      reference data is `SELECT`, and `UPDATE` exists only on the columns that
+      say how far along a job or a payment is. That last narrowing came from attacking the
       first version: with table-wide `UPDATE ON payment`, a review running as the
       restricted role pointed a pending payment at another vendor's bank account
       and multiplied the amount by five. Postgres now also enforces the payment
@@ -340,14 +348,35 @@ reason is stated where it happens rather than implied.
       have paid a *rejected* invoice if handed the decision's id; it no longer
       does. D-034 has the grants, the findings, and -- stated as plainly -- what
       a compromised application can still do.
-      *Not done:* write policies in the database, pseudonymisation, the threat
-      model. The classification layer they build on exists and is load
-      bearing: every column declares a sensitivity, an undeclared one is treated
-      as restricted, and the review projection is derived from the mapper rather
-      than from an allowlist. What is missing is enforcement in the database
-      rather than in the application, a stable-alias scheme that preserves the
-      shape of a judgment, and the threat model written down where it can be
-      argued with.
+      The API and the worker then stopped sharing an identity: a role each,
+      and rules Postgres enforces about which may write what. The worker writes
+      the record — extractions, matches, payments, the ledger — and may take the
+      one decision a machine is allowed, `auto_approved`, and only on an invoice
+      the match cleared. The API records what people decide and cannot write the
+      evidence its own decision would be about; it updates nothing, anywhere.
+      `authorise()` now also exists as a Postgres function, so a future route
+      that inserts a decision without asking is refused by the database. Reads
+      are deliberately *not* filtered, and D-035 explains why doing so would be
+      an authorisation bug rather than a privacy control.
+      Then the columns that name somebody — a vendor's name, a buyer's email
+      address, the filename a supplier chose — became a declared property of
+      the column, and the agent's projection drops them. That replaces the
+      "stable-alias scheme" this roadmap promised for two milestones: it was
+      designed, written down, attacked and abandoned, and D-036 is the argument.
+      The short version is that the outside reviewer it was for does not exist,
+      that for the agent an alias carries exactly what dropping carries, and
+      that a shared key over a list of vendor names is a liability rather than a
+      control. Closing the filename channel also cost the red-team suite one of
+      its three attack surfaces, and exposed that its tripwire had been
+      recomputing the projection's rule instead of asking it.
+      *Not done:* the written threat model. The classification layer the rest
+      builds on exists and is load bearing: every column declares a
+      sensitivity, an undeclared one is treated as restricted, and the review
+      projection is derived from the mapper rather than from an allowlist. What
+      is missing is the threat model written down where it can be argued
+      with — the one deliverable of this milestone that is prose rather than
+      code, and the one that decides whether any of the above was aimed at the
+      right thing.
 - [ ] **M10 — Terraform, load test, measured numbers.** Not started, and the
       most deferrable: it is the milestone that describes deployment rather than
       behaviour. The performance numbers this system does have were measured

@@ -34,11 +34,13 @@ from collections.abc import AsyncIterator
 import asyncpg
 import pytest
 import pytest_asyncio
-from tests.integration.databases import ISOLATED, ISOLATED_AS_APP
+from tests.integration.databases import ISOLATED, as_role
 
 pytestmark = pytest.mark.integration
 
-ROLE = "threshold_app"
+API = "threshold_api"
+WORKER = "threshold_worker"
+ROLES = (API, WORKER)
 
 READ = frozenset({"SELECT"})
 APPEND = frozenset({"SELECT", "INSERT"})
@@ -47,39 +49,56 @@ APPEND = frozenset({"SELECT", "INSERT"})
 #: the rest must be absent, including the two people forget are separate.
 ALL_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
 
-#: What `threshold_app` holds, and nothing it does not.
-EXPECTED: dict[str, frozenset[str]] = {
-    # The record: written once, never changed, never removed.
-    "audit_event": APPEND,
-    "ledger_transaction": APPEND,
-    "ledger_entry": APPEND,
-    "approval_decision": APPEND,
-    "extraction": APPEND,
-    "match_result": APPEND,
-    "match_exception": APPEND,
-    "escalation": APPEND,
-    "document": APPEND,
-    "idempotency_key": APPEND,
-    # Rows with a lifecycle -- and no table-wide UPDATE, since 0011. What may
-    # change about them is listed column by column in MUTABLE_COLUMNS below.
-    "dead_letter": APPEND,
-    "payment": APPEND,
-    "job": APPEND | {"DELETE"},  # the purge of finished work; the only DELETE there is
-    # Reference data the application consults. Rewriting it is the attack.
-    "vendor": READ,
-    "vendor_bank_account": READ,
-    "purchase_order": READ,
-    "purchase_order_line": READ,
-    "goods_receipt": READ,
-    "goods_receipt_line": READ,
+#: What each runtime role holds, table by table, and nothing it does not.
+#:
+#: Both roles read everything: the console shows a payment beside the invoice it
+#: paid, and the worker matches against the vendor's bank history. Reads are not
+#: where the danger is, and narrowing them here would be the authorisation
+#: inversion D-035 describes -- an exception a reader cannot see is an owner who
+#: stops being required.
+#:
+#: Writes are where they differ, and the difference is the whole increment.
+EXPECTED: dict[str, dict[str, frozenset[str]]] = {
+    # The record. Written once, never changed, never removed -- and only the
+    # process whose job it is may write each part.
+    "extraction": {API: READ, WORKER: APPEND},
+    "match_result": {API: READ, WORKER: APPEND},
+    "match_exception": {API: READ, WORKER: APPEND},
+    "escalation": {API: READ, WORKER: APPEND},
+    "ledger_transaction": {API: READ, WORKER: APPEND},
+    "ledger_entry": {API: READ, WORKER: APPEND},
+    "payment": {API: READ, WORKER: APPEND},
+    # Both write these, and they are the only three that both write. The API
+    # records what a person did; the worker records what it did.
+    "audit_event": {API: APPEND, WORKER: APPEND},
+    "job": {API: APPEND, WORKER: APPEND | {"DELETE"}},  # the purge of finished work
+    # Both may insert a decision, and a row-level policy decides which kind:
+    # the API only a human's, the worker only `auto_approved` on a match result
+    # that says auto_approve. `test_two_roles.py` is where that is asserted;
+    # the grant alone cannot express it.
+    "approval_decision": {API: APPEND, WORKER: APPEND},
+    # Ingest is the API's: a document arrives over HTTP.
+    "document": {API: APPEND, WORKER: READ},
+    "idempotency_key": {API: APPEND, WORKER: READ},
+    # The worker's own failure bookkeeping.
+    "dead_letter": {API: READ, WORKER: APPEND},
+    # Reference data. Rewriting it is the attack, for either of them.
+    "vendor": {API: READ, WORKER: READ},
+    "vendor_bank_account": {API: READ, WORKER: READ},
+    "purchase_order": {API: READ, WORKER: READ},
+    "purchase_order_line": {API: READ, WORKER: READ},
+    "goods_receipt": {API: READ, WORKER: READ},
+    "goods_receipt_line": {API: READ, WORKER: READ},
     # Nothing at runtime reads either: one is Alembic's, one is a worked example
     # of the money column convention.
-    "alembic_version": frozenset(),
-    "money_example": frozenset(),
+    "alembic_version": {API: frozenset(), WORKER: frozenset()},
+    "money_example": {API: frozenset(), WORKER: frozenset()},
 }
 
-#: How far along a row is. Everything not listed is what the row *is*, and the
-#: application cannot change it after the insert.
+#: How far along a row is. Everything not listed is what the row *is*, and no
+#: runtime role can change it after the insert.
+#:
+#: Held by the worker alone since 0012: the API updates nothing, anywhere.
 #:
 #: This was a table-wide UPDATE for one migration. The review of that migration
 #: used it to point a pending payment at another vendor's bank account.
@@ -112,16 +131,30 @@ MUTABLE_COLUMNS: dict[str, frozenset[str]] = {
 INSUFFICIENT_PRIVILEGE = "42501"
 
 
-@pytest_asyncio.fixture
-async def app() -> AsyncIterator[asyncpg.Connection]:
+@pytest_asyncio.fixture(params=ROLES)
+async def app(request: pytest.FixtureRequest) -> AsyncIterator[asyncpg.Connection]:
+    """A connection as one of the runtime roles -- every test here runs twice.
+
+    Parameterised rather than written twice because almost everything in this
+    file is true of both: neither may escalate, neither may rewrite the record,
+    neither owns anything. Where they differ, the test reads `EXPECTED[table]
+    [role]` or names the role outright.
+    """
+    role: str = request.param
     try:
-        connection = await asyncpg.connect(ISOLATED_AS_APP, timeout=5)
+        connection = await asyncpg.connect(as_role(role), timeout=5)
     except (OSError, asyncpg.PostgresError) as unreachable:
-        pytest.skip(f"cannot connect as {ROLE}; `make up` and `make test-db` ({unreachable})")
+        pytest.skip(f"cannot connect as {role}; `make up` and `make test-db` ({unreachable})")
     try:
         yield connection
     finally:
         await connection.close()
+
+
+async def _role(app: asyncpg.Connection) -> str:
+    """Asked of the connection rather than taken from the parameter: a DSN that
+    fell back to another identity must not be able to satisfy this file."""
+    return str(await app.fetchval("select current_user"))
 
 
 @pytest_asyncio.fixture
@@ -155,8 +188,8 @@ class TestTheRoleItself:
         """The vacuity guard for the whole file: a DSN that silently fell back to
         the owner would make every behavioural test below fail loudly, but would
         make this one the first and clearest."""
-        assert await app.fetchval("select current_user") == ROLE
-        assert await app.fetchval("select session_user") == ROLE
+        assert await _role(app) in ROLES
+        assert await app.fetchval("select session_user") == await _role(app)
 
     async def test_it_holds_no_attribute_that_outranks_a_grant(
         self, app: asyncpg.Connection
@@ -168,8 +201,8 @@ class TestTheRoleItself:
         assert row is not None
         held = sorted(name for name, value in row.items() if value)
         assert not held, (
-            f"{ROLE} holds {held}. rolsuper skips every privilege check and every "
-            "row-level-security policy; rolbypassrls skips the policies alone."
+            f"{await _role(app)} holds {held}. rolsuper skips every privilege check and "
+            "every row-level-security policy; rolbypassrls skips the policies alone."
         )
 
     async def test_it_owns_nothing(self, app: asyncpg.Connection) -> None:
@@ -179,7 +212,7 @@ class TestTheRoleItself:
             "select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace "
             "where n.nspname = 'public' and pg_get_userbyid(c.relowner) = current_user"
         )
-        assert not owned, f"{ROLE} owns {[r['relname'] for r in owned]}"
+        assert not owned, f"{await _role(app)} owns {[r['relname'] for r in owned]}"
 
     async def test_it_is_a_member_of_nothing(self, app: asyncpg.Connection) -> None:
         """Membership is how a harmless-looking role inherits a dangerous one:
@@ -188,7 +221,9 @@ class TestTheRoleItself:
             "select r.rolname from pg_auth_members m join pg_roles r on r.oid = m.roleid "
             "where m.member = (select oid from pg_roles where rolname = current_user)"
         )
-        assert not memberships, f"{ROLE} is a member of {[r['rolname'] for r in memberships]}"
+        assert not memberships, (
+            f"{await _role(app)} is a member of {[r['rolname'] for r in memberships]}"
+        )
 
 
 class TestThePolicyTableByTable:
@@ -199,18 +234,20 @@ class TestThePolicyTableByTable:
         }
         unclassified = sorted(tables - EXPECTED.keys())
         assert not unclassified, (
-            f"{unclassified} exist and nobody has decided what {ROLE} may do to them. "
-            "Grant in the migration that creates the table, then add it to EXPECTED: "
-            "APPEND if it is part of the record, LIFECYCLE if its rows change state, "
-            "READ if the application only consults it."
+            f"{unclassified} exist and nobody has decided what each role may do to them. "
+            "Grant in the migration that creates the table, then add a line to EXPECTED "
+            "saying what the API and the worker may each do: APPEND if that process "
+            "writes it, READ if it only consults it."
         )
         stale = sorted(EXPECTED.keys() - tables)
         assert not stale, f"EXPECTED describes tables that do not exist: {stale}"
 
     async def test_the_grants_are_exactly_the_policy(self, app: asyncpg.Connection) -> None:
         """Exactly: a missing grant is an outage, an extra one is the finding."""
+        role = await _role(app)
         wrong: list[str] = []
-        for table, expected in sorted(EXPECTED.items()):
+        for table, by_role in sorted(EXPECTED.items()):
+            expected = by_role[role]
             held = {
                 privilege
                 for privilege in ALL_PRIVILEGES
@@ -224,7 +261,7 @@ class TestThePolicyTableByTable:
                 wrong.append(
                     f"{table}: extra {sorted(held - expected)}, missing {sorted(expected - held)}"
                 )
-        assert not wrong, "\n".join(wrong)
+        assert not wrong, f"{role}:\n" + "\n".join(wrong)
 
     async def test_the_column_grants_are_exactly_the_policy(self, app: asyncpg.Connection) -> None:
         """`has_table_privilege` is false for a table where only *some* columns
@@ -241,16 +278,22 @@ class TestThePolicyTableByTable:
             "from information_schema.column_privileges "
             "where grantee = current_user and table_schema = 'public'"
         )
+        role = await _role(app)
         beyond: set[tuple[str, str, str]] = {
             (r["table_name"], r["column_name"], r["privilege_type"])
             for r in rows
-            if r["privilege_type"] not in EXPECTED.get(r["table_name"], frozenset())
+            if r["privilege_type"] not in EXPECTED.get(r["table_name"], {}).get(role, frozenset())
         }
-        policy = {
-            (table, column, "UPDATE")
-            for table, columns in MUTABLE_COLUMNS.items()
-            for column in columns
-        }
+        # The API updates nothing at all, so its half of this is the empty set.
+        policy = (
+            {
+                (table, column, "UPDATE")
+                for table, columns in MUTABLE_COLUMNS.items()
+                for column in columns
+            }
+            if role == WORKER
+            else set()
+        )
         assert beyond == policy, (
             f"granted and not in the policy: {sorted(beyond - policy)}; "
             f"in the policy and not granted: {sorted(policy - beyond)}"
@@ -386,7 +429,7 @@ class TestWhatACompromisedApplicationIsRefused:
             ]
         finally:
             await transaction.rollback()
-        assert not widened, f"{ROLE} granted itself {widened} on audit_event"
+        assert not widened, f"{await _role(app)} granted itself {widened} on audit_event"
 
     async def test_it_holds_no_grant_option(self, app: asyncpg.Connection) -> None:
         """The reason the statement above is harmless, stated directly. WITH GRANT
@@ -404,7 +447,12 @@ class TestWhatItIsStillAbleToDo:
     passes every test above, and so does a connection that is simply broken."""
 
     async def test_a_job_lives_its_whole_life(self, app: asyncpg.Connection) -> None:
-        """Insert, claim with SKIP LOCKED, finish, purge: every verb the queue uses."""
+        """Insert, claim with SKIP LOCKED, finish, purge: every verb the queue uses.
+
+        The worker's, again: the API enqueues work and never runs it.
+        """
+        if await _role(app) != WORKER:
+            pytest.skip("the API enqueues jobs and never claims, finishes or purges one")
         transaction = app.transaction()
         await transaction.start()
         try:
@@ -457,8 +505,13 @@ class TestWhatItIsStillAbleToDo:
         self, app: asyncpg.Connection, statement: str
     ) -> None:
         """The other half of the column policy. Without it, revoking UPDATE
-        entirely would pass every refusal above."""
-        assert await _refused(app, statement) == "permitted"
+        entirely would pass every refusal above.
+
+        The worker's alone: the API holds no UPDATE on anything, which
+        `test_two_roles.py` asserts directly.
+        """
+        expected = "permitted" if await _role(app) == WORKER else INSUFFICIENT_PRIVILEGE
+        assert await _refused(app, statement) == expected
 
     async def test_reference_data_can_be_read(self, app: asyncpg.Connection) -> None:
         assert await app.fetchval("select count(*) from vendor") > 0, "`make test-db` seeds vendors"

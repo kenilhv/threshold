@@ -55,15 +55,22 @@ LIVE: Final = os.environ.get(
     "postgresql+asyncpg://threshold:threshold@localhost:5432/threshold",
 )
 
-#: The isolated database again, as the role the running application holds.
-#:
-#: Every other test connects as the owner, because fixtures need to delete what
-#: they created and the owner is who may. That means an in-process service under
-#: test runs with more privilege than it has in production, and would not notice
-#: a missing grant. `test_least_privilege.py` is the one file that connects as
-#: `threshold_app`, so that what the role may and may not do is asserted against
-#: the role itself rather than inferred from a list.
-ISOLATED_AS_APP: Final = os.environ.get(
-    "THRESHOLD_TEST_APP_DATABASE_URL",
-    "postgresql://threshold_app:threshold_app@localhost:5432/threshold_test",
-)
+
+def as_role(role: str) -> str:
+    """The isolated database, as one of the runtime roles rather than the owner.
+
+    Every other test connects as the owner, because fixtures need to delete what
+    they created and the owner is who may. That means an in-process service under
+    test runs with more privilege than it has in production and would not notice
+    a missing grant or a policy it violates. `test_least_privilege.py` and
+    `test_two_roles.py` are the files that connect as the runtime roles, so that
+    what each may and may not do is asserted against the role itself.
+
+    The password is the local default unless the environment says otherwise --
+    the same posture as every other credential in this compose stack.
+    """
+    password = os.environ.get(
+        f"THRESHOLD_{role.removeprefix('threshold_').upper()}_DB_PASSWORD", role
+    )
+    host = ISOLATED.split("@", 1)[1]
+    return f"postgresql://{role}:{password}@{host}".replace("+asyncpg", "")

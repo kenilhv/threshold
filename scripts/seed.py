@@ -50,7 +50,13 @@ log = structlog.get_logger(__name__)
 #: identical rows.
 SEED_EPOCH = datetime(2026, 9, 1, 0, 0, 0, tzinfo=UTC)
 
-# Local-only. The real one is a per-deployment secret; see M9.
+# Local-only, and the only HMAC in this repository. A per-deployment secret in
+# anything real: this fingerprints bank details so the seed can carry a vendor's
+# payment history without storing the digits twice.
+#
+# It is deliberately *not* the alias scheme M9 once promised. That scheme was
+# abandoned (D-036), and this is a different job: fingerprinting a value nobody
+# is meant to recover, rather than pseudonymising one somebody is meant to read.
 _SEED_HMAC_KEY = b"threshold-local-seed-key"
 
 

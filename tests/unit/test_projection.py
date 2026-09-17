@@ -9,15 +9,18 @@ and the field at risk is the one on the table added last.
 
 from __future__ import annotations
 
+import inspect as inspect_module
 from decimal import Decimal
 
 import pytest
 from sqlalchemy import inspect
 
-from threshold.domain.classification import Sensitivity, sensitivity_of
+from threshold.agent import tools
+from threshold.agent.tools import AGENT_IDENTITIES
+from threshold.domain.classification import Sensitivity, classify, is_identity, sensitivity_of
 from threshold.domain.extraction import RESTRICTED_FIELD_KEYS
-from threshold.domain.models import Base, Vendor, VendorBankAccount
-from threshold.domain.projection import project, restricted_columns
+from threshold.domain.models import Base, Document, PurchaseOrder, Vendor, VendorBankAccount
+from threshold.domain.projection import identity_columns, project, restricted_columns
 
 MODELS = [mapper.class_ for mapper in Base.registry.mappers]
 
@@ -191,3 +194,87 @@ class TestFailClosed:
 
         undeclared = Column("mystery", String(10))
         assert sensitivity_of(undeclared) is Sensitivity.RESTRICTED
+
+
+class TestIdentityColumnsAreWithheldFromTheAgent:
+    """The second axis, added in M9. Derived from the mapper like everything
+    above: naming the columns here would protect the ones somebody remembered.
+
+    What is being tested is narrow and worth stating plainly. Identity columns
+    are *dropped* from the agent's projection, not aliased. The README promised
+    a keyed alias scheme for two milestones; D-036 records why writing it down
+    was what killed it.
+    """
+
+    @pytest.mark.parametrize("model", MODELS, ids=lambda m: m.__tablename__)
+    def test_dropping_identities_never_adds_a_column(self, model: type) -> None:
+        row = model()
+        assert set(project(row, identities=False)) <= set(project(row, identities=True))
+
+    @pytest.mark.parametrize("model", MODELS, ids=lambda m: m.__tablename__)
+    def test_it_drops_exactly_the_columns_that_declare_it(self, model: type) -> None:
+        row = model()
+        withheld = set(project(row, identities=True)) - set(project(row, identities=False))
+        assert withheld == identity_columns(model)
+
+    def test_the_agent_is_shown_neither_a_name_nor_an_address_nor_a_filename(self) -> None:
+        """The three that exist today, by name, because a test that is only
+        derived cannot fail when the declaration is removed from all of them."""
+        assert identity_columns(Vendor) == {"legal_name", "display_name"}
+        assert identity_columns(Document) == {"original_filename"}
+        assert identity_columns(PurchaseOrder) == {"buyer_email"}
+
+    def test_the_agent_projects_without_them(self) -> None:
+        """The wiring, not the mechanism: `agent/tools.py` must actually pass it."""
+        assert AGENT_IDENTITIES is False
+        source = inspect_module.getsource(tools)
+        calls = source.count("project(")
+        wired = source.count("identities=AGENT_IDENTITIES")
+        assert calls == wired, f"{calls} projections, {wired} of them identity-aware"
+
+    def test_a_document_keeps_what_the_agent_needs(self) -> None:
+        """The vacuity guard. Dropping every column would satisfy everything above.
+
+        A filename goes; the content type, the source and the hash stay, and
+        those are what a triager reasons about.
+        """
+        document = Document(
+            original_filename="ACME Holdings - INV-4471.pdf",
+            content_type="application/pdf",
+            source="upload",
+            content_sha256="a" * 64,
+            storage_key="documents/x",
+            byte_size=1,
+        )
+        shown = project(document, identities=False)
+        assert "original_filename" not in shown
+        assert "ACME" not in str(shown)
+        assert shown["content_type"] == "application/pdf"
+        assert shown["source"] == "upload"
+
+    def test_staff_still_see_the_name(self) -> None:
+        """The other vacuity guard: the console reads this projection too, and a
+        review queue that will not say who is billing is not a review queue."""
+        vendor = Vendor(legal_name="ACME Holdings BV", display_name="ACME")
+        assert project(vendor)["legal_name"] == "ACME Holdings BV"
+
+
+class TestTheTwoAxesDoNotContradictEachOther:
+    def test_a_public_column_cannot_be_an_identity(self) -> None:
+        with pytest.raises(ValueError, match="PUBLIC"):
+            classify(Sensitivity.PUBLIC, identity=True)
+
+    def test_a_restricted_column_need_not_say_so_twice(self) -> None:
+        with pytest.raises(ValueError, match="already dropped"):
+            classify(Sensitivity.RESTRICTED, identity=True)
+
+    def test_an_ordinary_column_carries_exactly_what_it_did_before(self) -> None:
+        """The key is absent rather than false, so the overwhelming majority of
+        columns are byte-identical to how they were declared before M9."""
+        assert classify(Sensitivity.INTERNAL) == {"sensitivity": Sensitivity.INTERNAL}
+
+    def test_every_identity_is_internal(self) -> None:
+        for model in MODELS:
+            for column in inspect(model).columns:
+                if is_identity(column):
+                    assert sensitivity_of(column) is Sensitivity.INTERNAL, column

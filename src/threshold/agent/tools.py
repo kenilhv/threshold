@@ -48,14 +48,30 @@ from threshold.domain.projection import project
 
 log = structlog.get_logger(__name__)
 
-#: What the agent is shown. INTERNAL, never RESTRICTED: the projection drops
-#: bank details, tax identifiers and invoice numbers rather than hashing them,
-#: so the agent sees `bank_changed: true` and never a bank number.
+#: What the agent is shown: INTERNAL, minus the columns that name somebody.
+#:
+#: RESTRICTED is dropped, so no bank digits and no tax identifier -- the agent
+#: sees that a `bank_details_changed` exception fired and never a bank number.
+#: Identity columns are dropped too: the vendor's name, the buyer's email
+#: address, the filename the supplier chose.
 #:
 #: This is the privacy control and the exfiltration control at once. A model
 #: cannot leak what was never put in front of it, and that holds however
-#: thoroughly it has been captured.
+#: thoroughly it has been captured. Withholding the filename also removes an
+#: injection channel rather than defending it: that string is chosen by whoever
+#: sent the document.
+#:
+#: What this does *not* claim, because an earlier version of this comment did
+#: and it was false: invoice numbers, amounts, purchase-order numbers and the
+#: supplier's own line descriptions still reach the agent, inside the free text
+#: of an exception's `detail` and `breach`. They are the evidence it reasons
+#: about. `test_agent_red_team.py` treats `detail` as hostile input for exactly
+#: that reason.
 AGENT_SENSITIVITY: Final = Sensitivity.INTERNAL
+
+#: Identity columns are withheld. D-036 says why this is a drop rather than the
+#: keyed alias scheme the README promised.
+AGENT_IDENTITIES: Final = False
 
 
 class UnknownToolError(LookupError):
@@ -99,7 +115,9 @@ async def get_match(session: AsyncSession, match_result_id: uuid.UUID) -> dict[s
     row = (
         await session.execute(select(MatchResult).where(MatchResult.id == match_result_id))
     ).scalar_one_or_none()
-    return None if row is None else project(row, level=AGENT_SENSITIVITY)
+    return (
+        None if row is None else project(row, level=AGENT_SENSITIVITY, identities=AGENT_IDENTITIES)
+    )
 
 
 async def get_exceptions(session: AsyncSession, match_result_id: uuid.UUID) -> list[dict[str, Any]]:
@@ -115,7 +133,7 @@ async def get_exceptions(session: AsyncSession, match_result_id: uuid.UUID) -> l
         .scalars()
         .all()
     )
-    return [project(row, level=AGENT_SENSITIVITY) for row in rows]
+    return [project(row, level=AGENT_SENSITIVITY, identities=AGENT_IDENTITIES) for row in rows]
 
 
 async def get_document(session: AsyncSession, document_id: uuid.UUID) -> dict[str, Any] | None:
@@ -123,7 +141,9 @@ async def get_document(session: AsyncSession, document_id: uuid.UUID) -> dict[st
     row = (
         await session.execute(select(Document).where(Document.id == document_id))
     ).scalar_one_or_none()
-    return None if row is None else project(row, level=AGENT_SENSITIVITY)
+    return (
+        None if row is None else project(row, level=AGENT_SENSITIVITY, identities=AGENT_IDENTITIES)
+    )
 
 
 async def get_purchase_order(
@@ -133,7 +153,9 @@ async def get_purchase_order(
     row = (
         await session.execute(select(PurchaseOrder).where(PurchaseOrder.id == purchase_order_id))
     ).scalar_one_or_none()
-    return None if row is None else project(row, level=AGENT_SENSITIVITY)
+    return (
+        None if row is None else project(row, level=AGENT_SENSITIVITY, identities=AGENT_IDENTITIES)
+    )
 
 
 #: Everything the agent can call. Adding to this is a security change, and

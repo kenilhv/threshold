@@ -307,9 +307,10 @@ class WorkerRuntime:
                 # A missing grant does not heal between attempts. It is fixed by
                 # a migration, after which `make replay` brings these back.
                 message = (
-                    f"refused by Postgres for lack of privilege (42501): {exc}. The role this "
-                    "worker connects as was not granted something its handler needs; that is "
-                    "fixed in a migration, not by retrying."
+                    f"refused by Postgres (42501): {exc}. Either the role this worker "
+                    "connects as was not granted something its handler needs, or a row-level "
+                    "policy refused the row it tried to write. Both are fixed in a migration "
+                    "or in the handler, and neither by retrying."
                 )
                 dead = await self._settle_failure(job, message, permanent=True)
                 self._record(job, _outcome_of(dead), started)

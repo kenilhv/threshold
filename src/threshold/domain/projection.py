@@ -31,7 +31,7 @@ from typing import Any, Final
 from sqlalchemy import inspect
 from sqlalchemy.orm import DeclarativeBase
 
-from threshold.domain.classification import Sensitivity, sensitivity_of
+from threshold.domain.classification import Sensitivity, is_identity, sensitivity_of
 from threshold.domain.extraction import RESTRICTED_FIELD_KEYS
 
 #: Ascending. A projection at level N keeps everything at or below N.
@@ -55,21 +55,41 @@ def _scrub(value: Any) -> Any:
     return value
 
 
-def project(row: DeclarativeBase, *, level: Sensitivity = Sensitivity.INTERNAL) -> dict[str, Any]:
+def project(
+    row: DeclarativeBase,
+    *,
+    level: Sensitivity = Sensitivity.INTERNAL,
+    identities: bool = True,
+) -> dict[str, Any]:
     """A dictionary of the columns a viewer at ``level`` may see.
 
     ``INTERNAL`` is the default because it is the projection an authenticated
     member of staff gets: everything except the identifiers that would let
     somebody redirect a payment or impersonate a supplier. ``PUBLIC`` is the
     narrower projection for anything leaving the building.
+
+    ``identities=False`` additionally drops the columns that name a person or a
+    company — the vendor's name, the buyer's email address, the filename the
+    supplier chose. That is the projection the triage agent gets, and the
+    default is True because staff reading the console need the names.
     """
     ceiling = _RANK[level]
     columns = inspect(type(row)).columns
     return {
         column.key: _scrub(getattr(row, column.key))
         for column in columns
-        if _RANK[sensitivity_of(column)] <= ceiling
+        if _RANK[sensitivity_of(column)] <= ceiling and (identities or not is_identity(column))
     }
+
+
+def identity_columns(model: type[DeclarativeBase]) -> frozenset[str]:
+    """Every column on ``model`` that names a person or a company.
+
+    Exposed for the same reason as `restricted_columns`: a test that asserts
+    against the mapper cannot drift from it, and one that asserts against a
+    hand-written list can.
+    """
+    return frozenset(column.key for column in inspect(model).columns if is_identity(column))
 
 
 def restricted_columns(model: type[DeclarativeBase]) -> frozenset[str]:

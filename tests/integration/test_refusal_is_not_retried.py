@@ -27,7 +27,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from tests.integration.databases import ISOLATED, ISOLATED_AS_APP
+from tests.integration.databases import ISOLATED, as_role
 
 from threshold.workers import runtime as runtime_module
 from threshold.workers.runtime import WorkerRuntime, _refused_by_privilege
@@ -37,18 +37,20 @@ pytestmark = pytest.mark.integration
 KIND = "privilege_probe"
 
 
+WORKER = "threshold_worker"
+
+
 @pytest_asyncio.fixture
 async def as_app() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine(ISOLATED_AS_APP.replace("postgresql://", "postgresql+asyncpg://"))
+    """The worker's own role: handlers run as it, and it is what 42501 means here."""
+    engine = create_async_engine(as_role(WORKER).replace("postgresql://", "postgresql+asyncpg://"))
     try:
         async with engine.connect() as connection:
             who = (await connection.execute(text("select current_user"))).scalar_one()
     except Exception as unreachable:
         await engine.dispose()
-        pytest.skip(
-            f"cannot connect as threshold_app; `make up` and `make test-db` ({unreachable})"
-        )
-    assert who == "threshold_app", who
+        pytest.skip(f"cannot connect as {WORKER}; `make up` and `make test-db` ({unreachable})")
+    assert who == WORKER, who
     yield async_sessionmaker(engine, expire_on_commit=False)
     await engine.dispose()
 

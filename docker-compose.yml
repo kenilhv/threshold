@@ -24,9 +24,10 @@ x-app-env: &app-env
   # it gets the role that can do least. `migrate` and `seed` override it below
   # with the owner, and they are the only two things that should.
   #
-  # THRESHOLD_APP_DB_PASSWORD is read in two places that must agree: here, and by
-  # migration 0010 when it creates (or, if the variable is set, re-keys) the role.
-  THRESHOLD_DATABASE_URL: postgresql+asyncpg://threshold_app:${THRESHOLD_APP_DB_PASSWORD:-threshold_app}@postgres:5432/threshold
+  # Deliberately no THRESHOLD_DATABASE_URL here. Since 0012 there is no single
+  # runtime identity: the API and the worker have a role each, and a default on
+  # this anchor would silently be the wrong one for whichever service forgot to
+  # set it. A service with no URL fails to start, which is the loud version.
   THRESHOLD_S3_ENDPOINT_URL: http://minio:9000
   THRESHOLD_S3_ACCESS_KEY_ID: minioadmin
   THRESHOLD_S3_SECRET_ACCESS_KEY: minioadmin
@@ -153,7 +154,8 @@ services:
       # ledger's balance trigger held against a buggy application and not
       # against a compromised one: a superuser can disable either in a statement.
       THRESHOLD_DATABASE_URL: postgresql+asyncpg://threshold:threshold@postgres:5432/threshold
-      THRESHOLD_APP_DB_PASSWORD: ${THRESHOLD_APP_DB_PASSWORD:-}
+      THRESHOLD_API_DB_PASSWORD: ${THRESHOLD_API_DB_PASSWORD:-}
+      THRESHOLD_WORKER_DB_PASSWORD: ${THRESHOLD_WORKER_DB_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -187,6 +189,13 @@ services:
     environment:
       <<: *app-env
       THRESHOLD_SERVICE_NAME: threshold-api
+      # Authenticates people and records what they decide. It may INSERT a
+      # human approval_decision (and only if `may_decide()` agrees), a document,
+      # an idempotency key, a job and an audit row. It holds no UPDATE or DELETE
+      # on anything, and it cannot write a match result, a payment or a ledger
+      # entry -- so a compromised API cannot manufacture the evidence its own
+      # decision would be about. See D-035.
+      THRESHOLD_DATABASE_URL: postgresql+asyncpg://threshold_api:${THRESHOLD_API_DB_PASSWORD:-threshold_api}@postgres:5432/threshold
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -255,6 +264,12 @@ services:
     environment:
       <<: *app-env
       THRESHOLD_SERVICE_NAME: threshold-worker
+      # Runs a PDF parser over bytes a stranger sent, which makes it the process
+      # most likely to be taken over. It writes the record -- extractions, match
+      # results, payments, the ledger -- and the one decision a machine may take:
+      # `auto_approved`, on a match result that says auto_approve. It cannot
+      # record that a *person* approved anything.
+      THRESHOLD_DATABASE_URL: postgresql+asyncpg://threshold_worker:${THRESHOLD_WORKER_DB_PASSWORD:-threshold_worker}@postgres:5432/threshold
     depends_on:
       migrate:
         condition: service_completed_successfully

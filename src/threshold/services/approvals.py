@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Final
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -243,6 +243,21 @@ class ApprovalService:
             reason=(request.reason or "").strip(),
             overrode=[code.value for code in authorisation.overrides],
         )
+        # Tell Postgres who is deciding, for this transaction only.
+        #
+        # `approval_decision_by_a_person` (migration 0012) re-runs `authorise()`
+        # in SQL against this value. It is not a defence against a compromised
+        # API, which could set it to anything; it is a defence against this
+        # codebase -- a future path that inserts a decision without having asked.
+        #
+        # `true` makes it transaction-local. A session-level SET would survive
+        # into whichever request next drew this connection from the pool, and
+        # that request would inherit somebody else's roles.
+        await session.execute(
+            text("select set_config('threshold.actor_roles', :roles, true)"),
+            {"roles": ",".join(sorted(role.value for role in roles))},
+        )
+
         # A savepoint, so losing the race is recoverable rather than terminal.
         #
         # Without it the IntegrityError poisons the session and the only row

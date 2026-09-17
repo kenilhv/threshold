@@ -115,19 +115,35 @@ Every column declares a sensitivity — `public`, `internal`, or `restricted` �
 in `domain/classification.py`, and an undeclared column is treated as restricted
 so that forgetting to classify one fails closed.
 
-Bank details, tax IDs and invoice numbers are dropped from the review
-projection, not hashed. A hash of a bank account is still a bank account to
-anyone holding a candidate list, and hashing the vendor name destroys the
-reviewer's task at the same time — nobody can judge whether an invoice looks
-wrong when the vendor reads `a3f9c1`.
+Bank details and tax IDs are dropped from the agent's projection, not hashed. A
+hash of a bank account is still a bank account to anyone holding a candidate
+list, and hashing the vendor name destroys the reviewer's task at the same time
+— nobody can judge whether an invoice looks wrong when the vendor reads
+`a3f9c1`.
 
-Pseudonymisation instead preserves the shape of the judgment: stable HMAC
-aliases so payment history still reads as history, and a single scaling factor
-per dataset so a 54% overbill still reads as 54%.
+The columns that *name* somebody are dropped too: the vendor's legal and display
+names, the buyer's email address, the filename the supplier chose. That is a
+second axis on the column — `identity=True` — rather than a fourth sensitivity
+level, because what separates them from other INTERNAL columns is not how
+sensitive they are but what they are for.
 
-The consequence for the agent is that it *cannot* exfiltrate a bank number
-because it never held one. It sees `bank_changed: true`. Privacy control and
-injection control, one mechanism.
+This is narrower than what this section promised for two milestones, which was a
+stable HMAC alias scheme and a per-dataset scaling factor. That was designed,
+written down, attacked and abandoned; D-036 is the argument, and the short
+version is that the outside reviewer it was for does not exist, and that for a
+triager which never reads a vendor row an alias carries exactly what dropping
+carries.
+
+The consequence for the agent is that it *cannot* exfiltrate a bank number or a
+supplier list because it never held one. It sees that a `bank_details_changed`
+exception fired. Privacy control and injection control, one mechanism — and one
+fewer injection channel, since the filename it no longer sees was a string an
+attacker chose.
+
+What still reaches it: invoice numbers, PO numbers, amounts and the supplier's
+own line descriptions, inside the free text of an exception's `detail`. That is
+the evidence it reasons about, and `test_agent_red_team.py` treats it as hostile
+for exactly that reason.
 
 ---
 
@@ -469,12 +485,18 @@ For eight sprints that paragraph was true of a buggy application and false of a
 compromised one. Every process connected as `threshold`, which is what
 `POSTGRES_USER` creates: the bootstrap superuser and the owner of every table,
 and either of those may `ALTER TABLE audit_event DISABLE TRIGGER ALL`. Since
-migration 0010 the API and the worker connect as `threshold_app`, which holds
-`SELECT` and `INSERT` on this table and owns nothing. An `UPDATE` is refused for
-lack of privilege before the trigger is consulted, and the trigger cannot be
-switched off by the role it constrains. `migrate` and `seed` are the only two
-containers that still hold the owner's credential, and both exit. D-034 has the
-grants and what they do not stop.
+migration 0010 no process connects as an owner or a superuser, and since 0012
+the API and the worker hold a role each: both may `INSERT` here and neither may
+`UPDATE`. The refusal comes from the privilege, before the trigger is consulted,
+and the trigger cannot be switched off by the roles it constrains. `migrate` and
+`seed` are the only two containers that still hold the owner's credential, and
+both exit.
+
+The audit log is the one table both runtime roles write, which is the exception
+that shows the rule: everywhere else the split decides who may write what, and
+D-035 has the table. D-034 and D-035 also say what neither lock stops -- an
+append-only log is proof against erasure and not against a lie inserted in the
+first place.
 
 Every event carries `trace_id` — the same id as the distributed trace (M5). A
 compliance question ("who approved this and what did the system know?") and an

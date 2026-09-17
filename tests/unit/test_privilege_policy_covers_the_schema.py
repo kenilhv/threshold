@@ -50,15 +50,24 @@ def test_a_table_with_mutable_columns_has_no_table_wide_update() -> None:
     """The two would contradict each other, and Postgres would resolve it in the
     permissive direction: a table-level UPDATE makes every column grant moot."""
     for table in MUTABLE_COLUMNS:
-        assert "UPDATE" not in EXPECTED[table], table
+        for role, held in EXPECTED[table].items():
+            assert "UPDATE" not in held, f"{role} on {table}"
 
 
 def test_the_record_is_never_updatable() -> None:
     """The invariant behind the map, so that an edit to the map cannot quietly
     drop it: nothing in this schema is UPDATE-able or DELETE-able table-wide
     except the purge of finished jobs."""
-    for table, held in EXPECTED.items():
-        assert "UPDATE" not in held, table
-        assert "TRUNCATE" not in held, table
-        if table != "job":
-            assert "DELETE" not in held, table
+    for table, by_role in EXPECTED.items():
+        for role, held in by_role.items():
+            assert "UPDATE" not in held, f"{role} on {table}"
+            assert "TRUNCATE" not in held, f"{role} on {table}"
+            if table != "job":
+                assert "DELETE" not in held, f"{role} on {table}"
+
+
+def test_the_two_roles_are_not_the_same_role() -> None:
+    """The vacuity guard for the split. If every table granted both roles the
+    same thing, the increment would be two names for one identity."""
+    differing = {table for table, by_role in EXPECTED.items() if len(set(by_role.values())) > 1}
+    assert len(differing) >= 8, sorted(differing)
