@@ -83,7 +83,8 @@ export default async function QueuePage({
           </caption>
           <thead>
             <tr>
-              <th scope="col">Exception</th>
+              <th scope="col">Invoice</th>
+              <th scope="col">Why it stopped</th>
               <th scope="col">Owner</th>
               <th scope="col">Due</th>
               <th scope="col">Decision</th>
@@ -92,10 +93,21 @@ export default async function QueuePage({
           <tbody>
             {items.map((item) => (
               <tr key={item.match_result_id}>
+                {/* Who and how much, first and together. A queue is scanned in
+                    that order before a word of it is read, and forty rows that
+                    differ only in their exception codes cannot be triaged at
+                    all -- which was true of this table until it had this
+                    column. */}
                 <td>
                   <a href={`/invoice/${item.document_id}`}>
-                    {item.exception_codes.map((c) => c.replace(/_/g, " ")).join(", ")}
+                    {item.vendor ?? "Vendor did not resolve"}
                   </a>
+                  <div className="meta">
+                    {item.amount ? `${item.amount} ${item.currency}` : "amount unreadable"}
+                  </div>
+                </td>
+                <td>
+                  {item.exception_codes.map((c) => c.replace(/_/g, " ")).join(", ")}
                   <div className="meta">
                     <span className={`tag ${severityOf(item)}`}>
                       {item.disposition === "blocked" ? "Blocked" : "Needs review"}

@@ -82,6 +82,10 @@ async def make_invoice(
         original_filename=f"{detail[:100]}.pdf",
         content_type="application/pdf",
         byte_size=1024,
+        # `fixture`, like every other integration fixture in this suite. Without
+        # it these rows are indistinguishable from uploads, and 195 of them
+        # accumulated in the demo database before anybody looked at the queue.
+        source="fixture",
     )
     session.add(document)
     await session.flush()
@@ -123,6 +127,43 @@ async def make_invoice(
         )
     await session.flush()
     return result
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def clean(sessions: async_sessionmaker[AsyncSession]) -> AsyncIterator[None]:
+    """Remove what these tests create, afterwards, every time.
+
+    `autouse` rather than opt-in: this file had no cleanup at all and left 195
+    documents behind, which flooded the reviewer queue in the demo database with
+    rows carrying no vendor and no amount -- the exact shape a queue cannot be
+    triaged from. A fixture somebody has to remember to request is a fixture
+    that gets forgotten, and it was.
+
+    Narrow on purpose. This database holds the seeded purchase orders these
+    tests match against, and a blanket delete would take them too.
+    """
+    yield
+    async with sessions() as session:
+        documents = (
+            (await session.execute(select(Document.id).where(Document.source == "fixture")))
+            .scalars()
+            .all()
+        )
+        if not documents:
+            return
+        results = (
+            (
+                await session.execute(
+                    select(MatchResult.id).where(MatchResult.document_id.in_(documents))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if results:
+            await session.execute(delete(Escalation).where(Escalation.match_result_id.in_(results)))
+        await session.execute(delete(Document).where(Document.id.in_(documents)))
+        await session.commit()
 
 
 class TestTheEscalationIsWritten:

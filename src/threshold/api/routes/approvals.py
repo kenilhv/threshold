@@ -17,7 +17,14 @@ from sqlalchemy import select
 from threshold.api.auth import Principal, require_principal
 from threshold.api.dependencies import SessionDep
 from threshold.domain.approval import Decision, authorise
-from threshold.domain.models import ApprovalDecision, MatchException, MatchResult
+from threshold.domain.ledger import to_major
+from threshold.domain.models import (
+    ApprovalDecision,
+    MatchException,
+    MatchResult,
+    PurchaseOrder,
+    Vendor,
+)
 from threshold.services.approvals import (
     AlreadyDecidedError,
     ApprovalService,
@@ -31,9 +38,29 @@ router = APIRouter(prefix="/v1", tags=["approvals"])
 
 
 class QueueItem(BaseModel):
+    """One row of somebody's work.
+
+    ``vendor`` and ``amount`` are here because without them every row of a
+    queue looks the same. A reviewer scans for who is billing and how much
+    before they read anything else, and a list of forty identical rows reading
+    "blocked / price variance / in 4h" is a list nobody can triage -- which is
+    the failure this queue exists to prevent.
+
+    Both are nullable and for the same reason: an invoice whose vendor did not
+    resolve, or whose total could not be read, is precisely the invoice that
+    raised an exception. The absence is the story, so it is rendered as an
+    absence rather than filled in with a zero or a placeholder.
+    """
+
     match_result_id: str
     document_id: str
     version: int
+    #: Who is billing. Null when nothing on the invoice matched a vendor on file.
+    vendor: str | None = None
+    #: Major units, as a string, formatted once on this side so a client cannot
+    #: reintroduce a rounding decision that was already made.
+    amount: str | None = None
+    currency: str | None = None
     disposition: str
     decided_at: str
     #: Earliest deadline among this invoice's open exceptions. The queue sorts
@@ -123,6 +150,19 @@ async def get_queue(
         .all()
     )
 
+    # One query for every vendor on the page rather than one per row. The N+1
+    # would be invisible at demo size and obvious at the size this is for.
+    order_ids = {r.purchase_order_id for r in rows if r.purchase_order_id is not None}
+    vendors: dict[uuid.UUID, str] = {}
+    if order_ids:
+        found = await session.execute(
+            select(PurchaseOrder.id, Vendor.display_name)
+            .join(Vendor, Vendor.id == PurchaseOrder.vendor_id)
+            .where(PurchaseOrder.id.in_(order_ids))
+        )
+        for order_id, display_name in found.all():
+            vendors[order_id] = display_name
+
     items: list[QueueItem] = []
     for result in rows:
         exceptions = await service.open_exceptions(session, result.id)
@@ -147,6 +187,17 @@ async def get_queue(
                 match_result_id=str(result.id),
                 document_id=str(result.document_id),
                 version=result.version,
+                vendor=(
+                    vendors.get(result.purchase_order_id)
+                    if result.purchase_order_id is not None
+                    else None
+                ),
+                amount=(
+                    None
+                    if result.amount_minor is None or result.currency is None
+                    else str(to_major(result.amount_minor, result.currency))
+                ),
+                currency=result.currency,
                 disposition=result.disposition,
                 decided_at=result.decided_at.isoformat(),
                 due_at=due.isoformat() if due else None,

@@ -24,8 +24,9 @@ Requires: make up
 from __future__ import annotations
 
 import json
+import time
 import urllib.parse
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
@@ -205,6 +206,79 @@ class TestTheDashboardIsLoadedAndNotJustWritten:
         assert not rejected, f"Prometheus rejected these panel queries: {rejected}"
 
 
+def _services_in(trace: dict) -> set[str]:
+    return {
+        attribute["value"]["stringValue"]
+        for batch in trace.get("batches", [])
+        for attribute in batch["resource"]["attributes"]
+        if attribute["key"] == "service.name"
+    }
+
+
+def _span_names_in(trace: dict) -> set[str]:
+    return {
+        span["name"]
+        for batch in trace.get("batches", [])
+        for scope in batch["scopeSpans"]
+        for span in scope["spans"]
+    }
+
+
+def _trace_from_tempo(
+    client: httpx.Client,
+    trace_id: str,
+    *,
+    until: Callable[[dict], bool],
+    describe: str,
+    within: float = 20.0,
+) -> dict:
+    """Ask Tempo for a trace, allowing for the fact that it ingests asynchronously.
+
+    This is not a sleep hiding a race. Tempo batches spans and flushes on an
+    interval, so a trace id committed to Postgres at T is queryable at T plus
+    some delta the exporter and the backend agree on between themselves. The
+    property under test is that the id *resolves* -- that an audit row is a
+    working handle on the whole story -- not that it resolves within one round
+    trip.
+
+    The old version asked once, for the newest id in the table, which is the id
+    least likely to have been flushed. It passed whenever the suite happened to
+    run a few seconds after the last write and failed otherwise, which is the
+    worst behaviour a test can have: it taught people that a red run means
+    nothing.
+
+    The caller supplies the condition, and that is the part worth insisting on.
+    Waiting for "any batch at all" and then asserting on the contents just moves
+    the race: the API flushes before the worker does, so a trace that exists but
+    has not finished arriving satisfies the wait and fails the assertion. That is
+    exactly how this test failed -- "the trace does not cross the queue; it only
+    touched {'threshold-api'}" -- and a naive retry would have left it failing
+    the same way, less often, which is worse.
+
+    The bound matters as much as the retry. A test that waits forever cannot
+    fail, and the message distinguishes "Tempo never got it" from "Tempo was
+    slow", so a genuine break still reads as one.
+    """
+    deadline = time.monotonic() + within
+    trace: dict = {}
+    last = "Tempo was never asked"
+    while True:
+        response = client.get(f"{TEMPO}/api/traces/{urllib.parse.quote(trace_id)}")
+        if response.status_code == 200:
+            trace = response.json()
+            if until(trace):
+                return trace
+            last = f"has {sorted(_services_in(trace)) or 'no batches'}"
+        else:
+            last = f"Tempo answered {response.status_code}"
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"after {within:.0f}s Tempo still does not have {describe} for trace "
+                f"{trace_id}, which an audit row claims to belong to: it {last}"
+            )
+        time.sleep(0.5)
+
+
 class TestOneInvoiceOneTraceThroughARealBackend:
     def test_an_audit_rows_trace_id_resolves_in_tempo(self, client: httpx.Client) -> None:
         """The M5 promise, end to end, through a real exporter and a real store.
@@ -217,22 +291,14 @@ class TestOneInvoiceOneTraceThroughARealBackend:
         if trace_id is None:
             pytest.skip("no audit rows with a trace id yet; run `make smoke`")
 
-        response = client.get(f"{TEMPO}/api/traces/{urllib.parse.quote(trace_id)}")
-        assert response.status_code == 200, (
-            f"Tempo has no trace {trace_id}, which an audit row claims to belong to"
+        both = {"threshold-api", "threshold-worker"}
+        trace = _trace_from_tempo(
+            client,
+            trace_id,
+            until=lambda payload: both <= _services_in(payload),
+            describe="spans from both services",
         )
-        batches = response.json().get("batches", [])
-        assert batches, f"Tempo returned an empty trace for {trace_id}"
-
-        services = {
-            attribute["value"]["stringValue"]
-            for batch in batches
-            for attribute in batch["resource"]["attributes"]
-            if attribute["key"] == "service.name"
-        }
-        assert {"threshold-api", "threshold-worker"} <= services, (
-            f"the trace does not cross the queue; it only touched {services}"
-        )
+        assert both <= _services_in(trace)
 
     def test_the_trace_contains_the_work_and_not_only_the_request(
         self, client: httpx.Client
@@ -248,14 +314,15 @@ class TestOneInvoiceOneTraceThroughARealBackend:
         if trace_id is None:
             pytest.skip("no audit rows with a trace id yet; run `make smoke`")
 
-        response = client.get(f"{TEMPO}/api/traces/{urllib.parse.quote(trace_id)}")
-        response.raise_for_status()
-        names = {
-            span["name"]
-            for batch in response.json()["batches"]
-            for scope in batch["scopeSpans"]
-            for span in scope["spans"]
-        }
+        trace = _trace_from_tempo(
+            client,
+            trace_id,
+            until=lambda payload: any(
+                name.startswith("process ") for name in _span_names_in(payload)
+            ),
+            describe="a worker span",
+        )
+        names = _span_names_in(trace)
         assert any(n.startswith("process ") for n in names), f"no worker span: {names}"
         assert {"SELECT", "INSERT"} & names, (
             f"no SQL spans; the engine is not instrumented. Spans were: {names}"

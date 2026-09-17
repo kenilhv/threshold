@@ -91,8 +91,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
         </p>
       )}
       <p className="lede">
-        Judged under policy <code>{match.policy_version}</code> on evidence version{" "}
-        {match.version}.{" "}
+        {`Judged under policy ${match.policy_version} on evidence version ${match.version}. `}
         {match.vendor
           ? `${match.vendor.vendor_number} · ${match.vendor.country_code} · ${match.vendor.status}`
           : "Nothing on this invoice matched a vendor on file."}
@@ -153,8 +152,9 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
         ))}
 
         <p className="meta">
-          {match.line_pairs.length} invoice line{match.line_pairs.length === 1 ? "" : "s"} paired
-          with the order
+          {match.line_pairs.length === 1
+            ? "1 invoice line paired with the order"
+            : `${match.line_pairs.length} invoice lines paired with the order`}
         </p>
       </div>
 

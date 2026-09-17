@@ -17,6 +17,9 @@ export type QueueItem = {
   disposition: string;
   decided_at: string;
   due_at: string | null;
+  vendor: string | null;
+  amount: string | null;
+  currency: string | null;
   exception_codes: string[];
   owners: string[];
   can_decide: boolean;
