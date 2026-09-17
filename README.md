@@ -457,7 +457,7 @@ Nothing here is written to be local-only. The differences are two:
 |---|---|
 | MinIO | S3 — same `boto3` calls, different endpoint |
 | Postgres container | RDS Postgres |
-| `job` table + `SKIP LOCKED` | SQS with a visibility timeout and redrive policy |
+| `job` table + `SKIP LOCKED` | **still the `job` table** — see below |
 | Compose services | ECS Fargate tasks behind an ALB |
 | Env files | Secrets Manager |
 | Keycloak | Cognito, or an existing IdP |
@@ -477,3 +477,56 @@ is a transactional outbox, which is more moving parts than the table it
 replaces. `uq_job_dedupe_key` and a replayable dead-letter table are two more
 guarantees the swap would spend. So the Terraform sizes RDS for the queue as
 well as the ledger, and lists SQS as a decision somebody would make on purpose.
+
+---
+
+## How this was built
+
+An AI-assisted build, directed and reviewed by me. Every commit says so in its
+trailer, and this section exists so the `git log` is not where you find that
+out.
+
+What that means concretely. The milestone structure is mine, and so is what
+counts as done at the end of each one: a working system, a gate that passes, and
+a written record of what was decided and why. So are the boundaries — that the
+agent gets no write tools, that identity comes from the database rather than the
+application, that the ledger is double-entry rather than a balance column. The
+implementation is collaborative. The review process is the part I would point
+at first.
+
+Because the interesting problem in working this way is not getting code written.
+It is that a confident wrong answer looks exactly like a right one, and the
+whole repository is arranged against that:
+
+- **Tests are mutated, not trusted.** Every control added in M9 and M10 was
+  broken on purpose to check that at least one test noticed — 13 mutations of
+  the payment triggers, 14 of the privilege grants, 14 of the row-level policies
+  and the grants behind them, 6 of the identity projection. That last run killed
+  9 of 14 on its first pass, and all five survivors were real gaps in my tests
+  rather than bad mutations: one was a case named "one owner of two" whose two
+  exceptions turned out to be owned by the same role, so it had never tested
+  what its name claimed.
+- **Claims are checked against the database, not the docs.** The least-privilege
+  work was reviewed by agents given a live connection as the restricted role and
+  told to assume the application was compromised. They broke it: with table-wide
+  `UPDATE` on `payment` they redirected a pending payment to another vendor's
+  account. Migration 0011 exists because of that, and `docs/DECISIONS.md` D-034
+  records it.
+- **The documentation is reviewed like the code.** Three passes over
+  `docs/THREAT-MODEL.md` checked 117 claims and returned 20 problems. One was
+  the sentence "auto-approval requires matching a real PO and a real receipt" —
+  which turned out to be false, and checking it found that an invoice whose line
+  items could not be read skipped every comparison and auto-approved. An invoice
+  for 99,999.99 against a 220.80 order, paid with nobody looking. It had
+  survived four milestones because nothing ever read the field recording that
+  the check was skipped.
+
+That last one is the honest summary of the method. The bug was not caught by
+writing more carefully. It was caught by writing down what the system was
+supposed to guarantee, then making someone check it against the code — which is
+also the answer to what a reviewer is for.
+
+Things I have deliberately left in: the `Known weaknesses, unfixed` table in the
+threat model, the decision records that reverse earlier decisions, and the
+commit messages that describe bugs I shipped. A repository that only records its
+wins is not evidence of anything.
