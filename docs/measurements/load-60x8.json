@@ -1,0 +1,49 @@
+{
+  "conditions": {
+    "documents_before": 69,
+    "jobs_before": 281,
+    "payments_before": 64,
+    "workers_seen": 1,
+    "schema_revision": "0013_audit_clock",
+    "postgres": "PostgreSQL 16.15 (Debian 16.15-1.pgdg12+2)",
+    "python": "3.12.10",
+    "platform": "Windows 11 (AMD64)",
+    "cpu_count": 32,
+    "stack": "docker compose, single worker, nothing tuned"
+  },
+  "count": 60,
+  "concurrency": 8,
+  "accepted": 60,
+  "rejected": 0,
+  "duplicates": 0,
+  "matched": 60,
+  "submit_wall_seconds": 0.55,
+  "submit_rate_per_second": 109.55,
+  "drain_seconds": 3.04,
+  "pipeline_rate_per_second": 16.74,
+  "accept": {
+    "name": "accept",
+    "n": 60,
+    "min_ms": 23.6,
+    "p50_ms": 51.9,
+    "p95_ms": 164.7,
+    "p99_ms": 165.2,
+    "max_ms": 165.2,
+    "mean_ms": 71.0
+  },
+  "settle": {
+    "name": "settle",
+    "n": 60,
+    "min_ms": 2078.1,
+    "p50_ms": 2224.5,
+    "p95_ms": 2412.6,
+    "p99_ms": 2423.5,
+    "max_ms": 2423.5,
+    "mean_ms": 2242.5
+  },
+  "queue_after": {
+    "pending": 59,
+    "succeeded": 221,
+    "claimed": 1
+  }
+}

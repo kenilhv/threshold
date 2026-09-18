@@ -42,6 +42,8 @@ import argparse
 import asyncio
 import dataclasses
 import json
+import os
+import platform
 import statistics
 import sys
 import time
@@ -168,6 +170,47 @@ async def queue_depth(connection: asyncpg.Connection) -> dict[str, int]:
     return {r["state"]: int(r["c"]) for r in rows}
 
 
+async def conditions(connection: asyncpg.Connection) -> dict[str, Any]:
+    """What this run was measured on, recorded with the numbers it produced.
+
+    A latency figure without its conditions is not evidence, and the condition
+    that moves these numbers most is not the CPU -- it is how much is already in
+    the database. An early run of this script reported a settle p50 of 5.6s
+    against a database holding 4,317 documents of test residue. The same load
+    against the seven the demos create is a different measurement, and nothing
+    in the output said so.
+
+    `documents` is therefore the first field a reader should check before
+    comparing two runs. The reproducible starting state is
+    `make clean && make up && make demo-match && make demo-queue`.
+    """
+    counts = await connection.fetchrow(
+        "select (select count(*) from document) as documents, "
+        "(select count(*) from job) as jobs, "
+        "(select count(*) from payment) as payments"
+    )
+    workers = await connection.fetchval(
+        "select count(distinct claimed_by) from job where claimed_by is not null"
+    )
+    server = await connection.fetchval("select version()")
+    revision = await connection.fetchval("select version_num from alembic_version")
+
+    return {
+        "documents_before": int(counts["documents"]),
+        "jobs_before": int(counts["jobs"]),
+        "payments_before": int(counts["payments"]),
+        # Distinct workers that have ever claimed anything in this database.
+        # One, in every run this repository has published.
+        "workers_seen": int(workers or 0),
+        "schema_revision": revision,
+        "postgres": (server or "").split(" on ")[0],
+        "python": platform.python_version(),
+        "platform": f"{platform.system()} {platform.release()} ({platform.machine()})",
+        "cpu_count": os.cpu_count(),
+        "stack": "docker compose, single worker, nothing tuned",
+    }
+
+
 async def run(count: int, concurrency: int, as_json: Path | None) -> int:
     print(f"Threshold load test: {count} invoices, {concurrency} concurrent\n")
 
@@ -184,7 +227,10 @@ async def run(count: int, concurrency: int, as_json: Path | None) -> int:
     connection = await asyncpg.connect(OWNER_DSN)
     try:
         before = await queue_depth(connection)
-        print(f"  queue before: {before or 'empty'}\n")
+        documents = await connection.fetchval("select count(*) from document")
+        print(f"  queue before: {before or 'empty'}")
+        # The condition that moves these numbers most. See conditions().
+        print(f"  documents in database: {documents}\n")
 
         gate = asyncio.Semaphore(concurrency)
         async with httpx.AsyncClient() as client:
@@ -215,6 +261,7 @@ async def run(count: int, concurrency: int, as_json: Path | None) -> int:
         after = await queue_depth(connection)
 
         report = {
+            "conditions": await conditions(connection),
             "count": count,
             "concurrency": concurrency,
             "accepted": len(accepted),

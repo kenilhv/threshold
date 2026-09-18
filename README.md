@@ -425,23 +425,39 @@ through three more jobs.
 
 | | 60 invoices, 8 concurrent | 150 invoices, 16 concurrent |
 |---|---|---|
-| accept (`POST` → 202), p50 | 121 ms | 168 ms |
-| accept, p95 | 214 ms | 655 ms |
-| received → matched, p50 | 2.7 s | 5.6 s |
-| received → matched, p95 | 2.9 s | 6.9 s |
-| end to end | 14.9 invoices/s | 14.7 invoices/s |
+| accept (`POST` → 202), p50 | 52 ms | 110 ms |
+| accept, p95 | 165 ms | 217 ms |
+| received → matched, p50 | 2.2 s | 4.2 s |
+| received → matched, p95 | 2.4 s | 4.7 s |
+| end to end | 16.7 invoices/s | 24.3 invoices/s |
 
-Read the shape rather than the numbers. Throughput is flat across a 2.5×
-increase in offered load, which is what a queue is for: the submitter cannot
-push the pipeline faster than one worker drains it, and the backlog shows up as
-settle latency rather than as errors or refusals. Accept latency degrading under
-concurrency while throughput holds is the same story from the other end.
+Both runs are committed in [`docs/measurements`](docs/measurements), each with
+the conditions it was measured under, because a latency figure without its
+conditions is a number rather than evidence.
+
+Read the shape rather than the numbers. **Throughput rises with offered load**,
+from 16.7/s to 24.3/s, and that is the queue doing its job rather than a
+paradox: at 60 invoices the single worker drains the backlog and then waits, so
+part of the window is idle. At 150 it never runs dry. The ceiling here is the
+worker, not the submitter, and the backlog shows up as settle latency rather
+than as errors or refusals — accept p95 moves by 50ms while settle p50 nearly
+doubles.
+
+An earlier version of this table reported 14.9/s and 14.7/s and called
+throughput *flat*, which read as a tidier story and was an artifact of the
+database: those runs went against 4,317 documents of accumulated test residue,
+and the flatness was both runs being equally slowed by it. The numbers above
+were measured from `make clean && make up && make demo-match && make
+demo-queue`, which is a state anybody can reproduce, and the committed files
+record the document count at the start of each run — 69 and 219, since the
+second run inherits the first one's invoices.
 
 Every figure is a floor. This runs against Docker Desktop on a laptop, sharing
 a CPU with Postgres, MinIO, Keycloak, Grafana, Tempo and Prometheus, against one
-worker — `worker_desired_count` defaults to 1 in the Terraform for a reason the
-threat model explains. Nothing was tuned for the run; a load test whose first
-act is to raise the pool size is measuring the tuning.
+worker — `worker_desired_count` defaults to 1 in the Terraform, and since M10
+that is a capacity choice rather than the limitation it used to be. Nothing was
+tuned for the run; a load test whose first act is to raise the pool size is
+measuring the tuning.
 
 Settle latency is measurable at all because migration 0013 made
 `audit_event.occurred_at` a real clock: it had been `now()`, which is the
