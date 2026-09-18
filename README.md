@@ -11,9 +11,17 @@ show where that line is and why it sits there.
 > it is matched against its purchase order and the goods received, and then one
 > of three things happens. It clears every check and the system records its own
 > approval. Or something disagrees and it waits in a queue for the person who
-> owns that particular problem. Either way, once approved it is paid — once,
-> idempotently — and the money is written into a double-entry ledger Postgres
-> will not let you unbalance.
+> owns that particular problem. Either way, once approved it is paid, and the
+> money is written into a double-entry ledger Postgres will not let you
+> unbalance.
+>
+> Paid *once* — with one known exception, found the day this was finished and
+> written down rather than quietly fixed: if a matching job runs twice, an
+> auto-approved invoice is paid twice. Every idempotency guard is keyed on the
+> match result, and a re-run produces a new one. An invoice waiting for a person
+> needs that person to decide again, so it is not paid twice by accident; an
+> auto-approved one needs nobody. Reproduced, not theorised, and the whole chain
+> is traced in [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md).
 >
 > All eleven sprints are done. M9 was the security one: every route now knows
 > who is asking; the application no longer connects to Postgres as a superuser,

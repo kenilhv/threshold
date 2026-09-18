@@ -343,13 +343,81 @@ marketing.
 | No `SECURITY DEFINER` chokepoint for decisions | A compromised API can forge a human approval | §D |
 | Audit rows are not authenticated | A compromised process can write convincing lies | §4 |
 | No second signature on large amounts | One authorised person can release any amount | §B |
-| `heartbeat()` is never called by the worker loop | A job that outlives the two-minute lease is reaped and run again while the first attempt is still working. Exercised by tests, so it is an unused capability rather than dead code | `workers/runtime.py` |
+| **A matching job that runs twice pays the invoice twice** | Reproduced. Every idempotency guard is keyed on the row that gets duplicated, so a second `match_result` mints a second approval, a second payment and a second rail key. See below | `workers/runtime.py`, `adapters/queue.py` |
+| `heartbeat()` is never called by the worker loop | The lease expires under a long handler, the reaper hands the job to a second worker, and the first is never told — which is how the row above gets triggered in production | `workers/runtime.py` |
+| `succeed()` and `fail()` do not report whether they won | A worker whose lease was stolen updates zero rows, logs `worker.job_succeeded`, and commits its work anyway; `fail()` is worse and dead-letters a job another worker is actively running | `adapters/queue.py` |
 | No `Idempotency-Key` on the approvals endpoint | A retried approval is refused rather than replayed; money does not move twice, but the message is wrong | `api/routes/approvals.py` |
 | Orphaned objects are never reclaimed | Storage grows; documented as a deliberate trade with an unpaid cost | D-006 |
 | Fixture credentials are committed | Local stack only, and marked as such — but they are in git history | `docker-compose.yml`, `.env.example` |
 | Nothing is encrypted at rest | Deployment property | M10 |
 
-The first two are the ones that matter. The rest are debts with owners.
+The first row is the one that matters, and it is worth the space.
+
+### An invoice can be paid twice, and every guard that should stop it misses
+
+Found by asking what happens when a job outlives its lease, then reproduced
+against the real handlers rather than argued:
+
+```
+run 1: match_result v1 auto_approve
+run 2: match_result v2 auto_approve
+  v1 -> decision 5fc309e9 (auto_approved)
+  v2 -> decision 0935a7ef (auto_approved)
+PAYMENTS FOR ONE INVOICE: 2
+  settled 26275 EUR  key=...af17f06060bc
+  settled 26275 EUR  key=...530b72ae1018
+invoice is worth 26275; settled total is 52550
+```
+
+The chain has four locks and the re-run walks past all of them, because each is
+keyed on the row that just got duplicated:
+
+- `uq_match_result_version` is on `(document_id, version)`. A re-run computes
+  `max(version) + 1`, so v2 is not a conflict; it is the next version, which is
+  a designed operation.
+- `uq_approval_decision_terminal` is keyed on `match_result_id`, so it refuses a
+  second terminal decision on *one* match result and has nothing to say about a
+  second match result. It is also **partial on `decision IN ('approved',
+  'rejected')`**, so `auto_approved` is outside it entirely — verified against
+  the live index definition.
+- `uq_payment_live_per_match` is keyed on `match_result_id`, and v2 is a
+  different match result.
+- `uq_payment_authorisation` is keyed on `approval_decision_id`, and the second
+  decision is a different decision.
+- `PaymentRequest.idempotency_key()` is derived from the approval decision, so
+  the rail is asked twice with two different keys and correctly honours both.
+
+Every one of those constraints is doing exactly what it was built to do. The
+defect is that the thing they are all anchored to — the match result — is the
+thing that gets duplicated, so anchoring more guards to it cannot help.
+
+What bounds the damage is not a constraint but a person. An invoice that needs a
+human decision sits in the queue against its new match result until somebody
+decides it again, and nobody approves the same invoice twice by accident. An
+auto-approved invoice needs nobody, so the re-run carries it all the way to the
+rail unattended. The automatic path is the one without a brake.
+
+D-005 says idempotency lives at two layers and answers two questions. This is a
+third question neither layer was asked: *is this the same invoice?* The
+duplicate-suspected check asks it of the document's content; nothing asks it of
+the payment.
+
+**Not fixed.** The fix is small and the design is settled — `succeed()` must
+report whether it won so the losing worker's transaction rolls back, `fail()`
+must stop dead-lettering a job it no longer owns, and a partial unique index on
+`payment(document_id)` for live states is the backstop. It is not in this commit
+because it is a correctness change to the path that moves money, and it is
+better made deliberately than late at night.
+
+One design was considered and rejected on the way: supervising the handler in a
+cancellable task so the worker heartbeats and aborts when the lease is lost.
+It does not work here. The handler and the supervising coroutine share one
+`AsyncSession`, which is not safe to cancel mid-statement; `CancelledError` is a
+`BaseException`, so `session_scope`'s `except Exception` would not roll back;
+and `.cancel()` cannot interrupt the synchronous `pypdf` parse that is the one
+handler capable of outliving its lease in the first place.
+
+The rest are debts with owners.
 
 **One row left this table rather than being reworded.** The reaper's advisory
 lock was session-level, taken on a pooled connection, with the result cached in
