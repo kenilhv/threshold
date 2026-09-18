@@ -34,6 +34,7 @@ show where that line is and why it sits there.
 > ```bash
 > make up          # the whole stack, waits until each part is actually serving
 > make demo-match  # four invoices, four different outcomes, with the reason for each
+> make demo-queue  # three more suppliers and a second currency, so the queue looks like one
 > make smoke       # 51 checks against the running system, end to end
 > ```
 >

@@ -165,6 +165,10 @@ check-console: ## Drive the console as a clerk and a buyer, and check what it re
 demo-match: ## Four invoices, four decisions, and the reason for each
 	@python scripts/demo_three_way_match.py
 
+.PHONY: demo-queue
+demo-queue: ## Three more suppliers, a second currency: a queue that looks like one
+	@python scripts/demo_queue.py
+
 .PHONY: eval
 eval: ## Measure the extractor and derive the gate:  make eval [n=400]
 	@PYTHONPATH=. python scripts/evaluate.py -n $(or $(n),400)

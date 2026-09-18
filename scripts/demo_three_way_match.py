@@ -1,4 +1,4 @@
-"""The M3 demo: three invoices, three different answers, and the reason for each.
+"""The M3 demo: four invoices, four different answers, and the reason for each.
 
     python scripts/demo_three_way_match.py
 

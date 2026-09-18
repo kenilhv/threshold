@@ -130,6 +130,7 @@ ignore = ["B008"]      # FastAPI's Depends() in defaults is the documented idiom
 # unavoidable here because the repo root has to be on sys.path before the
 # fixture generator can be imported.
 "scripts/demo_three_way_match.py" = ["T201", "E402"]
+"scripts/demo_queue.py" = ["T201", "E402"]
 "migrations/*" = ["N999", "E501"]
 
 [tool.pytest.ini_options]
