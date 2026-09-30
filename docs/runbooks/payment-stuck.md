@@ -30,14 +30,18 @@ Everything else is either moving or finished:
 
 ## The first thing to know
 
-**Do not create a second payment.** Three separate mechanisms exist to stop you
-and you should not be the thing that defeats all three:
+**Do not create a second payment.** Four separate mechanisms exist to stop you
+and you should not be the thing that defeats all four:
 
 * `uq_payment_authorisation` — one payment row per approval decision.
 * `idempotency_key` — derived from that same approval decision, so every retry
   sends the rail the identical key and a rail that already took the money
   returns its original answer rather than taking it again.
 * `uq_payment_live_per_match` — at most one live payment per body of evidence.
+* `uq_payment_live_per_document` — at most one live payment per document,
+  whatever authorised it. A new approval for an invoice already in flight is
+  refused and dead-lettered rather than paid (D-037), so re-approving is not a
+  way round a stuck payment.
 
 Retrying is safe *because* nothing about the retry is new. Anything that
 generates a fresh key, a fresh payment row or a fresh approval defeats that.

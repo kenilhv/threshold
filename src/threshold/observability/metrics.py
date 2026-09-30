@@ -535,6 +535,11 @@ class JobOutcome(StrEnum):
     DEAD_LETTERED = "dead_lettered"
     #: The worker is running older code than whatever enqueued the job.
     NO_HANDLER = "no_handler"
+    #: The handler finished after the reaper had given the job to another
+    #: worker, so its work was rolled back rather than committed. Not a failure
+    #: of the job, which is still running elsewhere, and not a success either:
+    #: a steady rate of these means handlers are outliving the lease.
+    LEASE_LOST = "lease_lost"
 
 
 def _kind_label(kind: str) -> str:

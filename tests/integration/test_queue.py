@@ -26,6 +26,7 @@ import pytest_asyncio
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from tests.metrics_reader import Recording
 
 from threshold.adapters.queue import ClaimedJob, PostgresJobQueue
 from threshold.domain.jobs import DEFAULT_MAX_ATTEMPTS, JobKind, JobState, backoff_for
@@ -367,6 +368,245 @@ class TestLeaseRecovery:
 
         async with sessionmaker_() as s:
             assert await queue.heartbeat(s, claimed[0].id, worker_id="slow") is False
+
+
+async def _stolen(
+    queue: PostgresJobQueue, sm: async_sessionmaker[AsyncSession], job_id: uuid.UUID, *, thief: str
+) -> ClaimedJob:
+    """Take a claimed job from whoever holds it, by the only route production has.
+
+    Not by writing `claimed_by` directly: the lease is expired by the database
+    owner, which is the one step that stands in for time passing, and then the
+    real reaper and the real claim do the rest. A test that forged the handover
+    would be testing the forgery.
+    """
+    async with sm() as s:
+        await s.execute(
+            update(Job)
+            .where(Job.id == job_id)
+            .values(lease_expires_at=func.now() - timedelta(seconds=1))
+        )
+        assert await queue.reap_expired_leases(s) == 1
+        [taken] = await queue.claim(s, worker_id=thief, limit=1)
+        await s.commit()
+    assert taken.id == job_id, "the thief claimed some other job"
+    return taken
+
+
+class TestALostLeaseSettlesNothing:
+    """`succeed()` and `fail()` report whether this worker still held the job.
+
+    Both were already scoped to the owner, so a stolen lease updated no rows.
+    Neither said so. `succeed()` returned None, and the runtime committed the
+    handler's work on the strength of a statement that matched nothing -- which
+    is how a matching job that outlived its lease paid an invoice twice.
+    `fail()` was worse: it wrote the dead letter before its UPDATE and returned
+    True regardless, filing a job another worker was running as dead.
+    """
+
+    async def _handed_over(
+        self, queue: PostgresJobQueue, sm: async_sessionmaker[AsyncSession]
+    ) -> tuple[ClaimedJob, ClaimedJob]:
+        await enqueue_n(queue, sm, 1)
+        async with sm() as s:
+            [loser] = await queue.claim(s, worker_id="A", limit=1)
+            await s.commit()
+        winner = await _stolen(queue, sm, loser.id, thief="B")
+        return loser, winner
+
+    async def test_the_worker_that_lost_the_lease_cannot_succeed_and_the_holder_can(
+        self, queue: PostgresJobQueue, sessionmaker_: async_sessionmaker[AsyncSession]
+    ) -> None:
+        loser, winner = await self._handed_over(queue, sessionmaker_)
+
+        async with sessionmaker_() as s:
+            assert await queue.succeed(s, loser.id, worker_id="A") is False
+            await s.commit()
+        async with sessionmaker_() as s:
+            row = (await s.execute(select(Job).where(Job.id == loser.id))).scalar_one()
+            assert (row.state, row.claimed_by) == (JobState.CLAIMED.value, "B"), (
+                "the losing worker's success reached the row anyway"
+            )
+
+        # The vacuity guard: a succeed() that always answered False would pass
+        # everything above.
+        async with sessionmaker_() as s:
+            assert await queue.succeed(s, winner.id, worker_id="B") is True
+            await s.commit()
+        async with sessionmaker_() as s:
+            row = (await s.execute(select(Job).where(Job.id == winner.id))).scalar_one()
+            assert row.state == JobState.SUCCEEDED.value
+
+    async def test_the_worker_that_lost_the_lease_cannot_dead_letter_the_job(
+        self, queue: PostgresJobQueue, sessionmaker_: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The one that filed a live job as dead. An operator replaying that
+        letter would have run the work a third time."""
+        loser, _ = await self._handed_over(queue, sessionmaker_)
+
+        async with sessionmaker_() as s:
+            assert (
+                await queue.fail(s, loser, worker_id="A", error="gave up", permanent=True) is False
+            )
+            await s.commit()
+
+        async with sessionmaker_() as s:
+            letters = (await s.execute(select(func.count()).select_from(DeadLetter))).scalar_one()
+            row = (await s.execute(select(Job).where(Job.id == loser.id))).scalar_one()
+        assert letters == 0, "a dead letter was filed for a job another worker holds"
+        assert (row.state, row.claimed_by) == (JobState.CLAIMED.value, "B")
+        assert row.last_error != "gave up"
+
+    async def test_the_worker_that_lost_the_lease_cannot_reschedule_the_job(
+        self, queue: PostgresJobQueue, sessionmaker_: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The retry branch. It was already scoped and already returned False,
+        so the return value was never wrong here -- but it logged a retry that
+        nobody had scheduled, and now it says what happened instead."""
+        loser, _ = await self._handed_over(queue, sessionmaker_)
+        assert not loser.is_final_attempt, "this would take the dead-letter branch"
+
+        async with sessionmaker_() as s:
+            assert await queue.fail(s, loser, worker_id="A", error="blip", permanent=False) is False
+            await s.commit()
+
+        async with sessionmaker_() as s:
+            row = (await s.execute(select(Job).where(Job.id == loser.id))).scalar_one()
+        assert (row.state, row.claimed_by) == (JobState.CLAIMED.value, "B")
+        assert row.last_error != "blip"
+
+    async def test_the_worker_holding_the_lease_can_still_dead_letter_it(
+        self, queue: PostgresJobQueue, sessionmaker_: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The vacuity guard for the two above. `fail()` now checks before it
+        writes, and a check that never passed would make both of them green
+        while dead-lettering nothing ever again."""
+        _, winner = await self._handed_over(queue, sessionmaker_)
+
+        async with sessionmaker_() as s:
+            assert await queue.fail(s, winner, worker_id="B", error="bad", permanent=True) is True
+            await s.commit()
+
+        async with sessionmaker_() as s:
+            letter = (
+                await s.execute(select(DeadLetter).where(DeadLetter.original_job_id == winner.id))
+            ).scalar_one()
+        assert (letter.final_error, letter.attempts) == ("bad", 2)
+
+
+class TestALosingWorkerCommitsNothing:
+    """The runtime half. A handler that outlives its lease leaves no trace.
+
+    The handler here does real work -- it writes an audit row, which is the one
+    write every real handler makes -- and then the job is taken from it while it
+    runs, through the real reaper and the real claim. When it returns, the
+    runtime's `succeed()` finds the job held by someone else, and everything the
+    handler wrote must roll back. Before this, it committed.
+
+    The audit row is flushed and read back inside the handler, so "no trace"
+    means a row that reached Postgres was rolled back, not a pending object that
+    was never sent.
+    """
+
+    PROBE = "test.lease_probe"
+
+    async def _run(
+        self,
+        queue: PostgresJobQueue,
+        sm: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        steal: bool,
+    ) -> tuple[uuid.UUID, uuid.UUID]:
+        """Run one job through a real WorkerRuntime. Returns (job id, probe id)."""
+        from threshold.services.audit import Actor, record
+        from threshold.workers.handlers import HANDLERS
+
+        probe = uuid.uuid4()
+        runtime = WorkerRuntime(queue=queue, sessions=sm, poll_interval=timedelta(milliseconds=20))
+
+        async def handler(session: AsyncSession, payload: dict[str, Any]) -> None:
+            await record(
+                session,
+                actor=Actor.system(),
+                action=self.PROBE,
+                entity_type="job",
+                entity_id=probe,
+            )
+            await session.flush()
+            written = await session.execute(
+                text("select count(*) from audit_event where entity_id = :probe"),
+                {"probe": probe},
+            )
+            assert written.scalar_one() == 1, "the write never reached the database"
+
+            if steal:
+                held = (
+                    await session.execute(select(Job.id).where(Job.claimed_by == runtime.identity))
+                ).scalar_one()
+                await _stolen(queue, sm, held, thief="the-other-worker")
+
+            # Stop after this job, so run_forever returns once it is settled.
+            runtime.request_stop()
+
+        monkeypatch.setitem(HANDLERS, JobKind.EXTRACT_DOCUMENT.value, handler)
+        [job_id] = await enqueue_n(queue, sm, 1)
+
+        task = asyncio.create_task(runtime.run_forever())
+        await asyncio.wait_for(task, timeout=10.0)
+        return job_id, probe
+
+    async def _probes(self, sm: async_sessionmaker[AsyncSession], probe: uuid.UUID) -> int:
+        async with sm() as s:
+            return (
+                await s.execute(
+                    text("select count(*) from audit_event where entity_id = :probe"),
+                    {"probe": probe},
+                )
+            ).scalar_one()
+
+    async def test_the_handler_s_writes_roll_back_and_the_job_stays_with_its_new_owner(
+        self,
+        queue: PostgresJobQueue,
+        sessionmaker_: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        recording: Recording,
+    ) -> None:
+        from threshold.observability import metrics as m
+
+        job_id, probe = await self._run(queue, sessionmaker_, monkeypatch, steal=True)
+
+        assert await self._probes(sessionmaker_, probe) == 0, (
+            "a worker that had lost its lease committed its handler's work"
+        )
+        async with sessionmaker_() as s:
+            row = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one()
+            letters = (await s.execute(select(func.count()).select_from(DeadLetter))).scalar_one()
+        assert (row.state, row.claimed_by) == (JobState.CLAIMED.value, "the-other-worker")
+        assert row.attempts == 2, "the new owner's claim is the only other thing that happened"
+        assert letters == 0, "the loser settled a failure for a job it no longer held"
+        assert (
+            recording.increase(
+                m.JOB_DURATION, kind=JobKind.EXTRACT_DOCUMENT.value, outcome="lease_lost"
+            )
+            == 1
+        )
+
+    async def test_a_handler_that_keeps_its_lease_commits(
+        self,
+        queue: PostgresJobQueue,
+        sessionmaker_: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The vacuity guard. If the probe never committed at all -- a handler
+        that was not registered, a write that was never flushed -- the test above
+        would pass without the runtime having done anything."""
+        job_id, probe = await self._run(queue, sessionmaker_, monkeypatch, steal=False)
+
+        assert await self._probes(sessionmaker_, probe) == 1
+        async with sessionmaker_() as s:
+            row = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        assert row.state == JobState.SUCCEEDED.value
 
 
 class TestFailureHandling:
@@ -765,8 +1005,8 @@ class _FailsFirstNClaims:
     async def heartbeat(self, session: AsyncSession, job_id: uuid.UUID, *, worker_id: str) -> bool:
         return await self._inner.heartbeat(session, job_id, worker_id=worker_id)
 
-    async def succeed(self, session: AsyncSession, job_id: uuid.UUID, *, worker_id: str) -> None:
-        await self._inner.succeed(session, job_id, worker_id=worker_id)
+    async def succeed(self, session: AsyncSession, job_id: uuid.UUID, *, worker_id: str) -> bool:
+        return await self._inner.succeed(session, job_id, worker_id=worker_id)
 
     async def fail(
         self,

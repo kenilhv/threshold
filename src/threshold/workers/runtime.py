@@ -7,6 +7,13 @@ succeeded, or schedule a retry, or dead-letter — commits with the handler's ow
 writes. A crash between "the work happened" and "the queue knows" is therefore
 impossible, because they are the same commit.
 
+**A worker that lost its lease commits nothing.** The same commit is also the
+only place ownership is checked. If the reaper gave the job away while the
+handler ran, `succeed` matches no row, `LeaseLostError` rolls the handler's
+writes back, and the worker now holding the job is the only one whose work
+lands. Before this the loser committed too, which is how one matching job paid
+one invoice twice (D-037).
+
 **Graceful shutdown finishes what it started.** On SIGTERM the loop stops
 claiming immediately but lets the job in flight run to completion. Killing it
 mid-job would be safe — the lease expires and someone picks it up — but doing
@@ -117,6 +124,28 @@ def _refused_by_privilege(exc: BaseException) -> bool:
                 return True
         link = getattr(link, "orig", None) or link.__cause__ or link.__context__
     return False
+
+
+class LeaseLostError(Exception):
+    """The handler finished, but the job had already been given to another worker.
+
+    Raised inside the handler's transaction, after the work and before the
+    commit, so that `session_scope` rolls the work back. It is an `Exception`
+    rather than a `BaseException` for exactly that reason: `session_scope`'s
+    rollback is an `except Exception`, and a `BaseException` would skip it and
+    leave the open transaction to whatever closes the session.
+
+    Deliberately not a `PermanentJobError` or a `TransientJobError`. Both of
+    those end in `fail()`, and there is nothing of this worker's left to fail:
+    the job belongs to whoever holds the lease now.
+    """
+
+    def __init__(self, job_id: uuid.UUID) -> None:
+        super().__init__(
+            f"job {job_id} was reassigned before this worker finished it; "
+            "its work was rolled back and the worker now holding it will redo it"
+        )
+        self.job_id = job_id
 
 
 def _outcome_of(dead_lettered: bool) -> JobOutcome:
@@ -283,9 +312,38 @@ class WorkerRuntime:
             ):
                 async with session_scope(self._sessions) as session:
                     await handler(session, job.payload)
-                    await self._queue.succeed(session, job.id, worker_id=self.identity)
+                    # Inside the scope, so that losing rolls the handler's writes
+                    # back instead of committing them next to a success marker
+                    # that matched no row.
+                    if not await self._queue.succeed(session, job.id, worker_id=self.identity):
+                        raise LeaseLostError(job.id)
             self._record(job, JobOutcome.SUCCEEDED, started)
             bound.info("worker.job_succeeded")
+
+        except LeaseLostError:
+            # The handler outlived its lease and the reaper gave the job to
+            # another worker, which is running it now or will shortly. This
+            # worker's writes have rolled back; the other worker's will be the
+            # only ones that land. Nothing is settled here: `fail()` would find
+            # no row of ours to fail, and the job's outcome is the other
+            # worker's to record.
+            #
+            # What this does not do is stop the work early. Supervising the
+            # handler -- heartbeating from a sibling task and cancelling the
+            # handler when a heartbeat comes back False -- was considered and
+            # rejected, for three reasons that each suffice:
+            #
+            # * the handler and the supervisor would share one AsyncSession,
+            #   and an AsyncSession is not safe to cancel mid-statement;
+            # * CancelledError is a BaseException, so `session_scope`'s
+            #   `except Exception` would not roll back;
+            # * `.cancel()` cannot interrupt the synchronous pypdf parse, which
+            #   is the one handler slow enough to outlive a lease at all.
+            #
+            # So a slow handler still runs to completion and still loses its
+            # lease. The cost is the duplicated effort, not a duplicated effect.
+            self._record(job, JobOutcome.LEASE_LOST, started)
+            bound.warning("worker.lease_lost", worker=self.identity)
 
         except PermanentJobError as exc:
             dead = await self._settle_failure(job, str(exc), permanent=True)

@@ -343,17 +343,52 @@ marketing.
 | No `SECURITY DEFINER` chokepoint for decisions | A compromised API can forge a human approval | §D |
 | Audit rows are not authenticated | A compromised process can write convincing lies | §4 |
 | No second signature on large amounts | One authorised person can release any amount | §B |
-| **A matching job that runs twice pays the invoice twice** | Reproduced. Every idempotency guard is keyed on the row that gets duplicated, so a second `match_result` mints a second approval, a second payment and a second rail key. See below | `workers/runtime.py`, `adapters/queue.py` |
-| `heartbeat()` is never called by the worker loop | The lease expires under a long handler, the reaper hands the job to a second worker, and the first is never told — which is how the row above gets triggered in production | `workers/runtime.py` |
-| `succeed()` and `fail()` do not report whether they won | A worker whose lease was stolen updates zero rows, logs `worker.job_succeeded`, and commits its work anyway; `fail()` is worse and dead-letters a job another worker is actively running | `adapters/queue.py` |
+| `heartbeat()` is never called by the worker loop | A handler that outlives the two-minute lease still loses it, and the reaper still hands the job to a second worker while the first runs on. What changed in D-037 is the ending: the first worker's writes roll back when it finds it no longer holds the job, and the second redoes the work, so the cost is duplicated effort rather than a duplicated effect. Supervising the handler so it stops early was rejected — see below | `workers/runtime.py` |
 | No `Idempotency-Key` on the approvals endpoint | A retried approval is refused rather than replayed; money does not move twice, but the message is wrong | `api/routes/approvals.py` |
 | Orphaned objects are never reclaimed | Storage grows; documented as a deliberate trade with an unpaid cost | D-006 |
 | Fixture credentials are committed | Local stack only, and marked as such — but they are in git history | `docker-compose.yml`, `.env.example` |
 | Nothing is encrypted at rest | Deployment property | M10 |
 
-The first row is the one that matters, and it is worth the space.
+The rest are debts with owners.
 
-### An invoice can be paid twice, and every guard that should stop it misses
+**One row left this table rather than being reworded.** The reaper's advisory
+lock was session-level, taken on a pooled connection, with the result cached in
+a Python flag — so the flag outlived the lock, and a recycled connection left
+the worker believing it was still the elected reaper while a second worker could
+take the same lock. It is now `pg_try_advisory_xact_lock`, re-taken every cycle,
+with no cached state to go stale.
+
+That it was in this table is how it got fixed: the portfolio review read the
+table, saw a one-word change behind it, and asked why it was being documented
+instead. Before the change the running worker held the lock on an `idle`
+connection, which is the defect visible in `pg_locks`; after it, nothing is held
+between cycles.
+
+**Two more left it in D-037: the double payment, and the queue verbs that let it
+happen.** A matching job that ran twice paid the invoice twice, and a job could
+run twice to completion because `succeed()` and `fail()` did not report whether
+they had won. Now they do. `succeed()` returns whether its owner-scoped UPDATE
+matched a row, and a worker that lost the lease raises inside its own
+transaction, so its handler's writes roll back and only the worker holding the
+job commits. `fail()` runs its UPDATE first and files a dead letter only if that
+matched, rather than filing one for a job another worker is running. Behind
+both, migration 0014's `uq_payment_live_per_document` refuses a second live
+payment for one document whatever authorised it, and the executor turns that
+refusal into a dead letter naming the payment already made, and posts no second
+accrual.
+
+What that does not cover. A re-rendered duplicate invoice is a different
+document, so the index is silent on it; `duplicate_suspected` catches it at
+match time when the invoice number and vendor name read the same, and puts it
+in front of a person; a copy that reads differently on both gets past
+everything. And the backstop refuses to *pay* a second authorisation; on a path
+other than the worker's, the second match result and decision are still written,
+and surface in the dead-letter queue.
+
+### An invoice could be paid twice, and every guard that should have stopped it missed
+
+**Fixed in D-037.** Kept as the record of how it was found and why four
+constraints that each did their job still let it through.
 
 Found by asking what happens when a job outlives its lease, then reproduced
 against the real handlers rather than argued:
@@ -391,23 +426,47 @@ Every one of those constraints is doing exactly what it was built to do. The
 defect is that the thing they are all anchored to — the match result — is the
 thing that gets duplicated, so anchoring more guards to it cannot help.
 
-What bounds the damage is not a constraint but a person. An invoice that needs a
-human decision sits in the queue against its new match result until somebody
-decides it again, and nobody approves the same invoice twice by accident. An
-auto-approved invoice needs nobody, so the re-run carries it all the way to the
-rail unattended. The automatic path is the one without a brake.
+What bounded the damage was not a constraint but a person. An invoice that
+needed a human decision sat in the queue against its new match result until
+somebody decided it again, and nobody approves the same invoice twice by
+accident. An auto-approved invoice needed nobody, so the re-run carried it all
+the way to the rail unattended. The automatic path was the one without a brake.
 
-D-005 says idempotency lives at two layers and answers two questions. This is a
+D-005 says idempotency lives at two layers and answers two questions. This was a
 third question neither layer was asked: *is this the same invoice?* The
-duplicate-suspected check asks it of the document's content; nothing asks it of
+duplicate-suspected check asks it of the document's content; nothing asked it of
 the payment.
 
-**Not fixed.** The fix is small and the design is settled — `succeed()` must
-report whether it won so the losing worker's transaction rolls back, `fail()`
-must stop dead-lettering a job it no longer owns, and a partial unique index on
-`payment(document_id)` for live states is the backstop. It is not in this commit
-because it is a correctness change to the path that moves money, and it is
-better made deliberately than late at night.
+**How it was fixed.** In two places, because the reproduced path and the
+unknown ones need different answers.
+
+- *The worker that lost stops committing.* `succeed()` returns whether its
+  UPDATE, already scoped to `claimed_by`, matched a row. The runtime checks it
+  inside the handler's transaction and raises `LeaseLostError` when it did not,
+  so `session_scope` rolls the handler's writes back: no v2, no second decision,
+  no second payment job. The loser records `lease_lost` and settles nothing,
+  because the job is the other worker's. `fail()` now runs its UPDATE before
+  writing anything and returns False, with no dead letter, when it matched
+  nothing. `test_queue.py` steals a job from a running handler through the real
+  reaper and asserts its audit write is gone.
+- *The payment asks the question nothing asked.* A document may have at
+  most one payment in `pending`, `submitting`, `submitted` or `settled`
+  (`uq_payment_live_per_document`, migration 0014). It is the backstop for any
+  other route to a second authorisation — a replayed dead letter, a job enqueued
+  by hand. `PaymentService._create` inserts inside a savepoint and turns the
+  index's refusal into `PaymentRefusedError` naming the live payment, which the
+  handler dead-letters to a person; the accrual is posted after the insert, so a
+  refused payment books nothing. Partial, like `uq_payment_live_per_match`, so a
+  payment the rail rejected does not block the corrected one.
+  `test_double_payment.py` is the reproduction above, and now ends with one
+  settled payment and one accrual.
+
+The migration refuses to build the index over rows that already break it, and
+names them rather than deciding which payment was the real one. The first
+database it met, it refused: the integration database still held two settled
+26275 EUR payments on one fixture document, written two minutes before the
+commit that recorded this reproduction. They were test residue, and the suite's
+own cleanup removed them before the migration ran again.
 
 One design was considered and rejected on the way: supervising the handler in a
 cancellable task so the worker heartbeats and aborts when the lease is lost.
@@ -415,22 +474,9 @@ It does not work here. The handler and the supervising coroutine share one
 `AsyncSession`, which is not safe to cancel mid-statement; `CancelledError` is a
 `BaseException`, so `session_scope`'s `except Exception` would not roll back;
 and `.cancel()` cannot interrupt the synchronous `pypdf` parse that is the one
-handler capable of outliving its lease in the first place.
-
-The rest are debts with owners.
-
-**One row left this table rather than being reworded.** The reaper's advisory
-lock was session-level, taken on a pooled connection, with the result cached in
-a Python flag — so the flag outlived the lock, and a recycled connection left
-the worker believing it was still the elected reaper while a second worker could
-take the same lock. It is now `pg_try_advisory_xact_lock`, re-taken every cycle,
-with no cached state to go stale.
-
-That it was in this table is how it got fixed: the portfolio review read the
-table, saw a one-word change behind it, and asked why it was being documented
-instead. Before the change the running worker held the lock on an `idle`
-connection, which is the defect visible in `pg_locks`; after it, nothing is held
-between cycles.
+handler capable of outliving its lease in the first place. So a slow handler
+still runs to the end and still loses its lease — which is the heartbeat row
+still in the table above.
 
 ---
 

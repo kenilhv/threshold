@@ -5,6 +5,161 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-037 — A worker that lost its lease commits nothing, and a document is paid at most once at a time
+
+**Date:** 2026-09-30 · **Status:** accepted
+
+A matching job that ran twice paid the invoice twice. That was reproduced, not
+argued: match one clean document, match it again, drain each approval through
+the executor, and the result was match result v1 and v2, two `auto_approved`
+decisions, two settled payments under two different rail keys, and twice the
+invoice gone. `docs/THREAT-MODEL.md` §5 keeps the output and the walk past each
+guard.
+
+A job runs twice when its handler outlives the two-minute lease. The reaper
+cannot tell a slow worker from a dead one, so it returns the job to pending and
+a second worker claims it while the first is still running. That part is by
+design and stays. The defect had two halves, and each is fixed where it lives.
+
+### The queue could not say who won
+
+`succeed()` was already scoped to `claimed_by`, so a worker whose lease had been
+stolen updated no rows. It returned None, and the runtime logged
+`worker.job_succeeded` and committed the handler's writes next to a success
+marker that had matched nothing. `fail()` was worse: it `session.add`ed the dead
+letter *before* its scoped UPDATE and returned True regardless, filing a job
+another worker was running at that moment.
+
+Now `succeed()` adds `RETURNING id` and returns whether it matched. The runtime
+checks inside the handler's transaction and raises `LeaseLostError` when it did
+not, so `session_scope` rolls the handler's work back and the worker holding
+the job is the only one whose writes land. The loser logs `worker.lease_lost`,
+records a new `lease_lost` outcome on `threshold.job.duration` -- the existing
+"Job outcomes" panel groups by outcome, so it appears there without a dashboard
+change -- and settles nothing: `fail()` would find no row this worker still holds, and
+the job's outcome belongs to the other worker.
+
+`fail()` now runs its UPDATE first on both branches and files the letter only if
+it matched; otherwise it logs `queue.fail_lease_lost` and returns False. The
+three verbs that settle or extend a claim share one ownership predicate,
+`_held_by` -- id, `claimed_by`, and `state = 'claimed'`. `heartbeat()` had
+checked the state and the other two had not.
+
+`succeed()` deliberately does not check that the lease is unexpired. A worker
+that finishes after its lease lapsed but before the reaper runs is still the
+only worker that has the job, and its UPDATE takes the row lock: a reaper that
+arrives afterwards waits, then finds the job `succeeded` rather than `claimed`.
+Refusing that commit would throw away work nobody else had started.
+
+### Nothing asked whether the invoice was already being paid
+
+Every guard was keyed on a row the re-run duplicates: the match result version,
+the approval decision's match result, the payment's match result and its
+decision, and a rail key derived from the decision. Each did its job. The
+document is the one row a re-run does not copy.
+
+Migration 0014 adds `uq_payment_live_per_document`: a partial unique index on
+`payment(document_id)` for `pending`, `submitting`, `submitted` and `settled`,
+the predicate `uq_payment_live_per_match` uses. It is mirrored in
+`Payment.__table_args__`. `PaymentService._create` inserts inside a savepoint and
+turns this index's refusal -- recognised by the constraint name the driver
+reports, not by searching the message -- into `PaymentRefusedError` naming the
+live payment, which the handler dead-letters to a person. The accrual is posted
+after the insert, so a refused payment books nothing.
+
+The worker fix closes the path that was reproduced. The index is for the paths
+nobody has found: a replayed dead letter, a job enqueued by hand during an
+incident, a future handler that re-matches for its own reasons.
+
+`Payment`'s docstring had argued that `document_id` is the wrong key: too strict,
+because re-matching after a correction is designed, and too loose, because a
+duplicate invoice arrives as two documents. That argument was about what a
+payment's identity hangs off, and it still holds; the authorisation stays the
+identity. The index asks a different question, of live payments only. The
+"too strict" objection is answered by the predicate: a document whose payment
+failed can be re-matched and paid. The "too loose" objection stands.
+
+The migration refuses to build over rows that already break the rule, naming
+them, the way 0012 refused ledger transactions that cited nothing. Two live
+payments for one document are an invoice paid twice, and a migration is not the
+place to decide which one stands. It refused on its first run: the integration
+database still held two settled 26275 EUR payments on one fixture document,
+written two minutes before the reproduction was committed.
+
+### Rejected
+
+**Supervising the handler.** Heartbeat from a sibling task and cancel the
+handler when the heartbeat fails, so a slow worker stops instead of finishing.
+It does not work here. The handler and the supervisor would share one
+`AsyncSession`, which is not safe to cancel mid-statement. `CancelledError` is a
+`BaseException`, so `session_scope`'s `except Exception` would not roll back.
+And `.cancel()` cannot interrupt the synchronous pypdf parse, which is the one
+handler slow enough to outlive a lease.
+
+**A full unique index on the document.** Simpler, and it would make a payment
+the rail rejected permanent, because the corrected payment could never be
+inserted.
+
+**Treating any IntegrityError on insert as a refusal.** Another constraint
+firing here is a different defect -- `uq_payment_authorisation` means one
+decision paid twice -- and dressing it as "already being paid" would hide it.
+
+**Tidying existing violations in the migration**, by deleting or failing one of
+each pair. That would erase the record of a double payment in the act of
+building the thing meant to prevent one.
+
+### What this does not cover
+
+- **A re-rendered duplicate invoice** is a different document, and the index is
+  silent on it. `duplicate_suspected` catches it at match time when the invoice
+  number and vendor name read the same, and puts it in front of a person. A copy
+  that reads differently on both gets past everything.
+- **A slow handler still loses its lease.** The cost is now duplicated effort
+  rather than a duplicated effect: an extraction's parse or model call happens
+  twice.
+- **A loser's calls outside the database are not rolled back.** A payment job
+  that loses its lease after asking the rail has asked it. The winner then asks
+  with the same key, because the key is derived from the decision rather than
+  the attempt, and the rail returns its first answer. That is the property the
+  key was built for, and this relies on it.
+- **The backstop refuses to pay a second authorisation; it does not stop one
+  being written.** On a path other than the worker's, the duplicate match result
+  and decision still exist, and show up in the dead-letter queue.
+
+### Proving the tests would notice
+
+`tests/integration/test_double_payment.py` is the reproduction, and now ends
+with one settled payment, one accrual and a `PaymentRefusedError` naming the
+first payment. It also checks that a refusal holds while the first payment is
+only `pending`, that two different documents are each paid, and that a failed
+payment does not block the next. `test_queue.py` steals a job through the real
+reaper and claim, then checks that the loser's `succeed()` and `fail()` both
+return False and change nothing, and runs a `WorkerRuntime` whose handler writes
+an audit row and has its job stolen mid-run: the row is gone, and the job is
+still claimed by the thief. `tests/unit/test_lease_lost.py` pins the runtime's
+rollback and the constraint recognition without a database.
+
+Five mutations, each applied and then restored. The first four were run against
+both full suites, the fifth against the payment tests:
+
+| Mutation | Killed by |
+|---|---|
+| `succeed()` returns True whatever it matched | `test_the_worker_that_lost_the_lease_cannot_succeed_and_the_holder_can`, and the runtime rollback test |
+| The runtime ignores `succeed()` | the runtime rollback test, and `test_rolls_back_what_its_handler_wrote` in the unit suite |
+| `fail()` files the letter before the ownership check | `test_the_worker_that_lost_the_lease_cannot_dead_letter_the_job` |
+| `uq_payment_live_per_document` dropped from the test database | both refusal tests in `test_double_payment.py` |
+| The accrual posted before the insert | both refusal tests, **after strengthening** |
+
+The last one survived the first draft. The refusal tests counted accruals after
+`session.rollback()`, and the rollback removed an accrual posted ahead of the
+refused insert along with everything else, so the count came out right whatever
+the order. The count now runs inside the refused attempt's transaction. The
+harness also checks that each mutation's anchor matched exactly once, for the
+reason D-036 records: a mutation that did not apply looks exactly like one that
+survived.
+
+---
+
 ## D-036 — Identity columns are withheld from the agent, and the alias scheme was abandoned
 
 **Date:** 2026-09-17 · **Status:** accepted

@@ -26,6 +26,11 @@ table waiting to be noticed.
 
 That is the whole crash story, and it is why the demo for this milestone is
 killing a worker mid-run and watching the job resume.
+
+The reaper cannot tell a dead worker from a slow one, so the same mechanism
+also takes jobs from workers that are still running them. That half of the story
+is told by ``succeed`` and ``fail``, which report whether this worker still held
+the job, and by the runtime, which rolls a loser's work back (D-037).
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ from typing import Any, Final, Protocol, cast, runtime_checkable
 
 import structlog
 from opentelemetry.propagate import inject
-from sqlalchemy import CursorResult, Select, delete, func, select, text, update
+from sqlalchemy import ColumnElement, CursorResult, Select, delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,6 +91,22 @@ def _with_trace_context(payload: dict[str, Any]) -> dict[str, Any]:
     if traceparent is None:
         return payload
     return {**payload, TRACEPARENT_KEY: traceparent}
+
+
+def _held_by(job_id: uuid.UUID, worker_id: str) -> tuple[ColumnElement[bool], ...]:
+    """What it means for this worker to own this job right now.
+
+    One definition, used by every verb that settles or extends a claim, because
+    three hand-written copies had already drifted: `heartbeat` checked the state
+    and `succeed` and `fail` did not. The state matters less than it looks --
+    every path that releases a claim clears `claimed_by` -- but a predicate that
+    is the same everywhere is one that can be reasoned about once.
+    """
+    return (
+        Job.id == job_id,
+        Job.claimed_by == worker_id,
+        Job.state == JobState.CLAIMED.value,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,7 +179,7 @@ class Queue(Protocol):
 
     async def succeed(
         self, session: AsyncSession, job_id: uuid.UUID, *, worker_id: str
-    ) -> None: ...
+    ) -> bool: ...
 
     async def fail(
         self,
@@ -350,27 +371,46 @@ class PostgresJobQueue:
         """
         stmt = (
             update(Job)
-            .where(
-                Job.id == job_id,
-                Job.claimed_by == worker_id,
-                Job.state == JobState.CLAIMED.value,
-            )
+            .where(*_held_by(job_id, worker_id))
             # Database clock, for the reason given in claim().
             .values(lease_expires_at=func.now() + self._lease)
             .returning(Job.id)
         )
         return (await session.execute(stmt)).scalar_one_or_none() is not None
 
-    async def succeed(self, session: AsyncSession, job_id: uuid.UUID, *, worker_id: str) -> None:
-        await session.execute(
-            update(Job)
-            .where(Job.id == job_id, Job.claimed_by == worker_id)
-            .values(
-                state=JobState.SUCCEEDED.value,
-                lease_expires_at=None,
-                last_error=None,
+    async def succeed(self, session: AsyncSession, job_id: uuid.UUID, *, worker_id: str) -> bool:
+        """Mark the job done. Returns False when this worker no longer holds it.
+
+        False means the lease expired, the reaper returned the job to pending,
+        and it may already be running on another worker. The caller must then
+        roll back everything it wrote for this job rather than commit it, or the
+        work happens twice -- and for a matching job, twice means a second match
+        result, a second auto-approval and a second payment. That is not a
+        hypothetical; it is the reproduction in docs/THREAT-MODEL.md §5.
+
+        This used to return None. The UPDATE was scoped to the owner, so a stolen
+        lease already updated nothing, but nothing could see that it had: the
+        runtime logged `worker.job_succeeded` and committed the handler's writes
+        on the strength of a statement that matched zero rows.
+
+        The UPDATE is also the moment of decision. It takes the row lock, so a
+        reaper arriving after it waits for this transaction and then finds the
+        job `succeeded` rather than `claimed`; a reaper that committed first has
+        already cleared `claimed_by`, and this matches nothing.
+        """
+        won = (
+            await session.execute(
+                update(Job)
+                .where(*_held_by(job_id, worker_id))
+                .values(
+                    state=JobState.SUCCEEDED.value,
+                    lease_expires_at=None,
+                    last_error=None,
+                )
+                .returning(Job.id)
             )
-        )
+        ).scalar_one_or_none()
+        return won is not None
 
     async def fail(
         self,
@@ -386,6 +426,14 @@ class PostgresJobQueue:
         A permanent failure skips the remaining attempts entirely. Retrying a
         corrupt document three times wastes the budget and delays it reaching a
         human by the length of the backoff, which helps nobody.
+
+        Returns False, and writes nothing, when this worker no longer holds the
+        job. Both branches run their scoped UPDATE first and act only on a row
+        it actually matched. The dead-letter branch used to `session.add` the
+        letter unconditionally and then run the UPDATE, so a worker whose lease
+        had been stolen filed a dead letter -- with its own error, and a job id
+        an operator would replay -- for a job another worker was running at that
+        moment, and still returned True.
         """
         exhausted = permanent or job.is_final_attempt
 
@@ -394,7 +442,7 @@ class PostgresJobQueue:
             retry_at = (
                 await session.execute(
                     update(Job)
-                    .where(Job.id == job.id, Job.claimed_by == worker_id)
+                    .where(*_held_by(job.id, worker_id))
                     .values(
                         state=JobState.PENDING.value,
                         claimed_by=None,
@@ -409,12 +457,39 @@ class PostgresJobQueue:
                     .returning(Job.run_after)
                 )
             ).scalar_one_or_none()
+            if retry_at is None:
+                # Somebody else's job now. Its backoff, attempt count and
+                # last_error belong to the worker holding it.
+                log.warning(
+                    "queue.fail_lease_lost", job_id=str(job.id), worker=worker_id, error=error
+                )
+                return False
             log.info(
                 "queue.retry_scheduled",
                 job_id=str(job.id),
                 attempt=job.attempts,
-                retry_at=retry_at.isoformat() if retry_at else None,
+                retry_at=retry_at.isoformat(),
             )
+            return False
+
+        # The UPDATE first, and the letter only if it matched. In the other order
+        # the letter is written whether or not this worker still owns the job.
+        died = (
+            await session.execute(
+                update(Job)
+                .where(*_held_by(job.id, worker_id))
+                .values(
+                    state=JobState.DEAD.value,
+                    claimed_by=None,
+                    claimed_at=None,
+                    lease_expires_at=None,
+                    last_error=error[:4000],
+                )
+                .returning(Job.id)
+            )
+        ).scalar_one_or_none()
+        if died is None:
+            log.warning("queue.fail_lease_lost", job_id=str(job.id), worker=worker_id, error=error)
             return False
 
         session.add(
@@ -426,17 +501,6 @@ class PostgresJobQueue:
                 dedupe_key=job.dedupe_key,
                 final_error=error[:4000],
                 failure_kind="permanent" if permanent else "transient",
-            )
-        )
-        await session.execute(
-            update(Job)
-            .where(Job.id == job.id, Job.claimed_by == worker_id)
-            .values(
-                state=JobState.DEAD.value,
-                claimed_by=None,
-                claimed_at=None,
-                lease_expires_at=None,
-                last_error=error[:4000],
             )
         )
         log.warning(

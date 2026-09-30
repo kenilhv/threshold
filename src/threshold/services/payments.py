@@ -47,9 +47,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Final
 
 import structlog
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from threshold.adapters.rail.port import (
@@ -81,14 +83,45 @@ from threshold.services.audit import Actor, record
 
 log = structlog.get_logger(__name__)
 
+#: The index that refuses a second live payment for one document (migration
+#: 0014). Named here because the refusal is recognised by it: an IntegrityError
+#: from any other constraint is a bug, and reporting it as "already being paid"
+#: would hide it behind a reasonable-sounding sentence.
+LIVE_PER_DOCUMENT: Final = "uq_payment_live_per_document"
+
+
+def _violates(exc: BaseException, constraint: str) -> bool:
+    """Whether Postgres refused this for violating `constraint`, however wrapped.
+
+    SQLAlchemy raises `IntegrityError`, whose `orig` is the driver's adapter,
+    whose cause is asyncpg's `UniqueViolationError` -- and that last one is what
+    carries `constraint_name`. Walked the same way `_refused_by_privilege` walks
+    for a SQLSTATE in `workers/runtime.py`, and for the same reason: which layer
+    holds the attribute is a detail of the driver, not a contract.
+
+    By attribute rather than by searching the message, because the message is
+    prose and a constraint whose name contains this one's would match it.
+    """
+    seen: set[int] = set()
+    link: BaseException | None = exc
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        if getattr(link, "constraint_name", None) == constraint:
+            return True
+        link = getattr(link, "orig", None) or link.__cause__ or link.__context__
+    return False
+
 
 class PaymentRefusedError(PaymentError):
     """This invoice cannot be paid, and not because of a transient failure.
 
     Separate from `PaymentError` so a handler can send it to the dead-letter
-    queue rather than retrying. Every reason here is a missing fact -- no amount
-    was read, no payment details are on file -- and re-reading the same rows
-    produces the same absence.
+    queue rather than retrying. Almost every reason here is a missing fact -- no
+    amount was read, no payment details are on file -- and re-reading the same
+    rows produces the same absence. The exception is a fact that is present: the
+    document already has a live payment. That does not heal on retry either, and
+    a second authorisation for an invoice already being paid is a question for a
+    person rather than for the rail.
     """
 
 
@@ -133,8 +166,11 @@ class PaymentService:
     async def _create(self, session: AsyncSession, approval_decision_id: uuid.UUID) -> Payment:
         """Turn an authorisation into a payable row, or refuse with a reason.
 
-        Every refusal here is a missing fact rather than a policy judgment, and
-        each is stated separately so the dead-letter queue says which one.
+        Every refusal here is a fact rather than a policy judgment, and each is
+        stated separately so the dead-letter queue says which one. All but the
+        last are missing facts. The last is the database saying this document is
+        already being paid, which is the backstop for a matching job that ran
+        twice and minted a second authorisation (D-037).
         """
         decision = (
             await session.execute(
@@ -198,8 +234,22 @@ class PaymentService:
             idempotency_key=request.idempotency_key(),
             rail_id=self._rail.rail_id,
         )
-        session.add(payment)
-        await session.flush()
+        # In a savepoint, so that a refusal by `uq_payment_live_per_document`
+        # leaves the transaction usable: the refusal names the payment that is
+        # already live, and finding it takes a query.
+        #
+        # The accrual comes after this on purpose. A refused insert posts
+        # nothing, so there is no second liability for one invoice to unwind.
+        try:
+            async with session.begin_nested():
+                session.add(payment)
+                await session.flush()
+        except IntegrityError as exc:
+            if not _violates(exc, LIVE_PER_DOCUMENT):
+                raise
+            raise PaymentRefusedError(
+                await self._already_paying(session, request.document_id, approval_decision_id)
+            ) from exc
 
         await self._post(
             session,
@@ -219,6 +269,41 @@ class PaymentService:
             },
         )
         return payment
+
+    async def _already_paying(
+        self, session: AsyncSession, document_id: uuid.UUID, approval_decision_id: uuid.UUID
+    ) -> str:
+        """The refusal for a document that already has a live payment, naming it.
+
+        Named, because the dead letter this becomes is read by a person who has
+        to decide which authorisation was the real one, and "a payment exists"
+        sends them looking for it. Read after the savepoint rolled back, so the
+        row found is the committed one the index compared against.
+        """
+        existing = (
+            (
+                await session.execute(
+                    select(Payment)
+                    .where(Payment.document_id == document_id)
+                    .where(Payment.state != PaymentState.FAILED.value)
+                    .order_by(Payment.created_at)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        which = (
+            f"payment {existing.id} ({existing.state}, {existing.amount_minor} "
+            f"{existing.currency}, authorised by approval decision "
+            f"{existing.approval_decision_id})"
+            if existing is not None
+            else "a payment this transaction cannot see"
+        )
+        return (
+            f"document {document_id} is already being paid by {which}; approval decision "
+            f"{approval_decision_id} would pay the same invoice a second time. A second "
+            "authorisation for one document is a question for a person, not for the rail"
+        )
 
     async def _payee(self, session: AsyncSession, result: MatchResult) -> VendorBankAccount:
         """The account currently on file for this invoice's vendor.

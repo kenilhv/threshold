@@ -1375,6 +1375,17 @@ class Payment(Base):
     because the duplicate this system exists to catch is one invoice arriving as
     two documents with two ids.
 
+    That is an argument about what a payment's *identity* hangs off, and it
+    still holds. It was never an argument against also asking, of live payments
+    only, whether this document is already being paid -- and nothing asked,
+    which is how one invoice was paid twice: a matching job that ran twice minted
+    a second match result and a second authorisation, and every key above is
+    keyed on a row that got duplicated. ``uq_payment_live_per_document`` asks it
+    (D-037). Partial on the live states, so the "too strict" objection is met by
+    the predicate: a correction re-matched after a *failed* payment is paid, and
+    one re-matched while a payment is live is refused and reaches a person. The
+    "too loose" objection stands, and the index does not pretend otherwise.
+
     ``idempotency_key`` is what the rail is told, and it is derived from the same
     approval decision. So the key and the constraint say the same thing in two
     places, which is what lets them catch each other failing.
@@ -1494,6 +1505,16 @@ class Payment(Base):
         Index(
             "uq_payment_live_per_match",
             "match_result_id",
+            unique=True,
+            postgresql_where=text("state IN ('pending', 'submitting', 'submitted', 'settled')"),
+        ),
+        # At most one live payment per document, whatever authorised it. The
+        # backstop for a job that ran twice: the second run's match result and
+        # decision are new rows, so the two indexes above cannot see it, and the
+        # document is the one thing both runs share. Migration 0014; D-037.
+        Index(
+            "uq_payment_live_per_document",
+            "document_id",
             unique=True,
             postgresql_where=text("state IN ('pending', 'submitting', 'submitted', 'settled')"),
         ),
