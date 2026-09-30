@@ -15,13 +15,15 @@ show where that line is and why it sits there.
 > money is written into a double-entry ledger Postgres will not let you
 > unbalance.
 >
-> Paid *once* — with one known exception, found the day this was finished and
-> written down rather than quietly fixed: if a matching job runs twice, an
-> auto-approved invoice is paid twice. Every idempotency guard is keyed on the
-> match result, and a re-run produces a new one. An invoice waiting for a person
-> needs that person to decide again, so it is not paid twice by accident; an
-> auto-approved one needs nobody. Reproduced, not theorised, and the whole chain
-> is traced in [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md).
+> Paid *once*, including the case that used to break it. If a matching job
+> outlived its lease and ran twice, an auto-approved invoice was paid twice:
+> every idempotency guard was keyed on the match result, and the re-run made a
+> new one. That was found by review, reproduced, published before it was fixed,
+> and then closed at both ends — a worker that loses its lease now rolls its
+> work back instead of committing it, and Postgres allows one live payment per
+> document. What that does not cover, a re-scanned duplicate arriving as a
+> different document, is stated in [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md)
+> rather than implied away.
 >
 > All eleven sprints are done. M9 was the security one: every route now knows
 > who is asking; the application no longer connects to Postgres as a superuser,

@@ -15,13 +15,21 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential \
  && rm -rf /var/lib/apt/lists/*
 
-# Dependencies resolve from pyproject alone, so this layer is cached until the
-# dependency set actually changes rather than on every source edit.
-COPY pyproject.toml README.md ./
+# Dependencies resolve from pyproject *through constraints.txt*, so this layer
+# is cached until the dependency set changes, and when it is rebuilt it installs
+# the versions the test suite passed against rather than whatever is newest.
+#
+# It used to be pyproject alone, whose bounds are all `>=`. A rebuild on
+# 2026-09-30 re-resolved and pulled SQLAlchemy 2.1.1 into the images while the
+# suite ran against 2.0.52 on the host. Traces produced by those images carried
+# no database spans at all -- "one invoice is one trace" quietly lost every
+# query, with no error anywhere -- and rebuilding on the pinned versions brought
+# them back. Nothing was pinned, so nothing said so; a telemetry test did.
+COPY pyproject.toml README.md constraints.txt ./
 RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --upgrade pip setuptools wheel \
  && mkdir -p src/threshold && touch src/threshold/__init__.py \
- && /opt/venv/bin/pip install .
+ && /opt/venv/bin/pip install -c constraints.txt .
 
 # ---------------------------------------------------------------- runtime ---
 FROM python:3.12-slim AS runtime

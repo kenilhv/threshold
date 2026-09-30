@@ -301,9 +301,16 @@ class MatchingService:
         Note what this does *not* catch, because it matters: a genuine duplicate
         submitted as a rescanned image with a different byte hash and a
         differently-typed vendor name will slip past both this and the
-        content-hash check in ingest. Payment-time idempotency in M8 is the
-        control that actually closes that, and it closes it on the money rather
-        than on the paperwork.
+        content-hash check in ingest.
+
+        This docstring used to say payment-time idempotency closes that case "on
+        the money rather than on the paperwork". It does not, and never did:
+        every payment guard -- `uq_payment_authorisation`, and since 0014
+        `uq_payment_live_per_document` -- is keyed on something a second document
+        does not share. A re-scanned duplicate is a different document, gets its
+        own match, and if it clears every check it is paid. What stands in the
+        way is this heuristic and the person it routes to; docs/THREAT-MODEL.md
+        says so too.
         """
         number = (invoice.invoice_number.value or "").strip()
         vendor_name = (invoice.vendor_name.value or "").strip()

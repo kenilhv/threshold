@@ -117,6 +117,14 @@ verify: lint check-alerts test eval-check ## What CI runs on every commit
 # validates in CI should be the version that validates here.
 TERRAFORM = docker run --rm -v "$(CURDIR)/infra/aws:/w" -w /w hashicorp/terraform:1.9
 
+.PHONY: lock
+lock: ## Re-pin constraints.txt to this environment. Run only after the full suite passed here.
+	python -m pip freeze | grep -viE "^threshold|^-e |@ file:" > .tested.txt
+	uv pip compile pyproject.toml --all-extras --python-version 3.12 	  --python-platform x86_64-unknown-linux-gnu -c .tested.txt --no-header --no-annotate 	  -o .constraints.body.txt
+	sed -n '/^#/p' constraints.txt | head -20 > .constraints.head.txt
+	cat .constraints.head.txt .constraints.body.txt > constraints.txt
+	rm -f .tested.txt .constraints.body.txt .constraints.head.txt
+
 .PHONY: tf-validate
 tf-validate: ## Check the AWS Terraform is well-formed. Never applies anything.
 	$(TERRAFORM) fmt -check -diff

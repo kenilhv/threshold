@@ -1,0 +1,95 @@
+# Every third-party package this project installs, pinned for Linux / Python 3.12.
+#
+# Used by the Dockerfile and CI as a *constraints* file: pyproject.toml still
+# declares what the project needs, and this file decides which version of each
+# arrives. Without it, every image rebuild and every CI run re-resolved lower
+# bounds to whatever was newest that day, and on 2026-09-30 that meant
+# SQLAlchemy 2.1.1 in the containers against 2.0.52 under test, and traces from
+# those images carried no database spans until they were rebuilt on these pins.
+#
+# Regenerate deliberately, and only from an environment the full suite has just
+# passed in:
+#
+#   make lock
+#
+# It also settles the eval gate's instrument drift: pypdf and reportlab are now
+# the same version on a laptop and in CI, so `measured_by.*` stops moving on its
+# own.
+alembic==1.19.2
+annotated-doc==0.0.5
+annotated-types==0.7.0
+anyio==4.14.1
+asgiref==3.12.1
+asyncpg==0.31.0
+boto3==1.43.71
+botocore==1.43.71
+botocore-stubs==1.43.67
+certifi==2026.6.17
+cffi==2.1.0
+charset-normalizer==3.4.9
+click==8.4.2
+cryptography==49.0.0
+fastapi==0.141.1
+googleapis-common-protos==1.75.1
+greenlet==3.5.5
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.18
+iniconfig==2.3.0
+jmespath==1.1.0
+mako==1.4.1
+markupsafe==3.0.3
+mypy==1.18.2
+mypy-extensions==1.1.0
+opentelemetry-api==1.44.0
+opentelemetry-exporter-otlp-proto-common==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-instrumentation==0.65b0
+opentelemetry-instrumentation-asgi==0.65b0
+opentelemetry-instrumentation-botocore==0.65b0
+opentelemetry-instrumentation-fastapi==0.65b0
+opentelemetry-instrumentation-sqlalchemy==0.65b0
+opentelemetry-propagator-aws-xray==1.0.2
+opentelemetry-proto==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-semantic-conventions==0.65b0
+opentelemetry-util-http==0.65b0
+packaging==26.2
+pathspec==1.1.1
+pillow==12.3.0
+pluggy==1.6.0
+protobuf==6.33.6
+pycparser==3.0
+pydantic==2.12.5
+pydantic-core==2.41.5
+pydantic-settings==2.15.0
+pygments==2.20.0
+pyjwt==2.13.0
+pypdf==6.16.2
+pytest==9.1.1
+pytest-asyncio==1.4.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-multipart==0.0.20
+pyyaml==6.0.3
+reportlab==5.0.1
+requests==2.34.2
+ruff==0.16.6
+s3transfer==0.19.2
+six==1.17.0
+sqlalchemy==2.0.52
+starlette==1.6.0
+structlog==26.1.0
+types-boto3==1.43.90
+types-pyyaml==6.0.12.20260906
+types-s3transfer==0.16.0
+typing-extensions==4.15.0
+typing-inspection==0.4.4
+urllib3==2.7.0
+uvicorn==0.52.4
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==15.0.1
+wrapt==2.4.1
