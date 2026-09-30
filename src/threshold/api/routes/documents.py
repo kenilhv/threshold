@@ -24,23 +24,26 @@ from typing import Annotated
 import structlog
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from threshold.adapters.extraction.port import ExtractionError
 from threshold.api import idempotency
 from threshold.api.auth import Principal, require_principal
 from threshold.api.dependencies import SessionDep, get_ingest_service
 from threshold.domain.classification import Sensitivity
-from threshold.domain.extraction import redacted_fields
+from threshold.domain.extraction import ExtractedInvoice, redacted_fields
 from threshold.domain.ledger import to_major
 from threshold.domain.models import (
     Document,
     Escalation,
     Extraction,
+    GoodsReceiptLine,
     MatchException,
     MatchResult,
     Payment,
     PurchaseOrder,
+    PurchaseOrderLine,
     Vendor,
 )
 from threshold.domain.projection import project
@@ -181,6 +184,37 @@ class EscalationView(BaseModel):
     created_at: str
 
 
+class LineEvidence(BaseModel):
+    """One invoice line beside the order line it was paired with.
+
+    The three documents of a three-way match as numbers a reviewer can check,
+    rather than a verdict they have to trust: what was ordered and at what
+    agreed price, what has arrived, and what is billed.
+
+    Every quantity and price is the stored decimal as a string, unrounded. The
+    console formats them and computes nothing, for the same reason the payment
+    carries ``amount`` beside ``amount_minor``.
+
+    ``received_quantity`` is received *to date*, read now rather than frozen at
+    matching time, so a delivery booked after the match can show here before a
+    rematch sees it. That is a reason to ask for a rematch, and it is not hidden.
+    """
+
+    invoice_line: int
+    description: str
+    #: Null when the extractor could not read the field, which the matcher
+    #: already treated as not read.
+    billed_quantity: str | None = None
+    billed_unit_price: str | None = None
+    billed_line_total: str | None = None
+    #: Null when the line was not paired with any line on the order -- itself
+    #: one of the exceptions on this invoice.
+    po_line: int | None = None
+    ordered_quantity: str | None = None
+    agreed_unit_price: str | None = None
+    received_quantity: str | None = None
+
+
 class MatchView(BaseModel):
     """What the matcher concluded, and everything needed to argue with it.
 
@@ -205,6 +239,8 @@ class MatchView(BaseModel):
     amount: str | None = None
     currency: str | None = None
     line_pairs: list[dict[str, int]]
+    #: The evidence behind ``line_pairs``, one row per invoice line.
+    lines: list[LineEvidence] = Field(default_factory=list)
     skipped_checks: list[str]
     exceptions: list[ExceptionView]
     #: None when the invoice's vendor did not resolve, which is itself an
@@ -358,6 +394,71 @@ async def get_document(
     )
 
 
+def _decimal(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
+async def _line_evidence(session: AsyncSession, result: MatchResult) -> list[LineEvidence]:
+    """Each invoice line beside what was ordered and what arrived.
+
+    Read from the same three sources the matcher read -- the extraction it
+    judged, the order it paired against, and the receipts summed per order
+    line -- so the rows are the evidence behind the verdict and not a second
+    opinion. Only ``line_items`` is taken from the extraction; nothing
+    restricted on the invoice is read here.
+    """
+    extraction = await session.get(Extraction, result.extraction_id)
+    if extraction is None:
+        return []
+    invoice = ExtractedInvoice.model_validate(extraction.fields)
+
+    ordered: dict[int, tuple[object, object, object]] = {}
+    if result.purchase_order_id is not None:
+        received = func.coalesce(func.sum(GoodsReceiptLine.quantity_received), 0)
+        rows = (
+            await session.execute(
+                select(
+                    PurchaseOrderLine.line_number,
+                    PurchaseOrderLine.quantity_ordered,
+                    PurchaseOrderLine.unit_price,
+                    received.label("quantity_received"),
+                )
+                .select_from(PurchaseOrderLine)
+                .outerjoin(
+                    GoodsReceiptLine,
+                    GoodsReceiptLine.purchase_order_line_id == PurchaseOrderLine.id,
+                )
+                .where(PurchaseOrderLine.purchase_order_id == result.purchase_order_id)
+                .group_by(PurchaseOrderLine.id)
+            )
+        ).all()
+        ordered = {
+            row.line_number: (row.quantity_ordered, row.unit_price, row.quantity_received)
+            for row in rows
+        }
+
+    paired = {pair["invoice_line"]: pair["po_line"] for pair in result.line_pairs}
+    unpaired: tuple[object, object, object] = (None, None, None)
+    evidence: list[LineEvidence] = []
+    for number, item in enumerate(invoice.line_items, start=1):
+        po_line = paired.get(number)
+        quantity, price, arrived = unpaired if po_line is None else ordered.get(po_line, unpaired)
+        evidence.append(
+            LineEvidence(
+                invoice_line=number,
+                description=item.description.value or "",
+                billed_quantity=_decimal(item.quantity.value),
+                billed_unit_price=_decimal(item.unit_price.value),
+                billed_line_total=_decimal(item.line_total.value),
+                po_line=po_line,
+                ordered_quantity=_decimal(quantity),
+                agreed_unit_price=_decimal(price),
+                received_quantity=_decimal(arrived),
+            )
+        )
+    return evidence
+
+
 @router.get(
     "/{document_id}/match",
     response_model=MatchView,
@@ -480,6 +581,7 @@ async def get_match(
         ),
         currency=result.currency,
         line_pairs=list(result.line_pairs),
+        lines=await _line_evidence(session, result),
         skipped_checks=list(result.skipped_checks),
         vendor=vendor_view,
         escalation=escalation_view,

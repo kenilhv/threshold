@@ -5,6 +5,66 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-038 — The invoice screen shows the evidence, and the console is printed like the run it replaces
+
+**Date:** 2026-09-30 · **Status:** accepted
+
+The invoice screen said "price variance" three times and never showed a price.
+The matcher had compared the order, the receipt and the bill line by line, and
+the reviewer was shown its conclusion in three near-identical sentences with the
+decimals unrounded ("2.6000 over"). A reviewer who cannot see the numbers has to
+trust the verdict, which is the one thing this screen exists to avoid.
+
+`GET /v1/documents/{id}/match` now carries `lines`: each invoice line beside the
+order line it was paired with, as ordered, received and billed quantities and the
+agreed and billed unit prices. They are read from the same three sources the
+matcher read (the extraction it judged, the order it paired against, receipts
+summed per order line), so they are the evidence behind the verdict and not a
+second opinion. Only `line_items` is taken from the extraction; nothing
+restricted is read. Figures travel as the stored decimal strings. `received` is
+received *to date*, which can include a delivery booked after the match; the
+screen says so under the table instead of hiding it.
+
+The console formats those strings and computes nothing. `lib/format.ts` groups
+and trims digits as text, never through a float, so "18.4000" prints as "18.40"
+and cannot print as "18.399999". Deadlines print in the unit a person plans in
+("in 2 days", "4 h overdue"), not "overdue by 290h". Exception codes print as
+what the owner would call them ("Billed above the agreed price"), with the code
+kept beside it, because the decision record stores codes.
+
+The look was chosen, not drifted into. Seven directions were drawn from the
+audience's own world (auditor's working papers, the approval stamp, spreadsheets,
+the green-bar aging report, the bound ledger, the remittance advice, the ERP
+transaction screen). A seeded roll assigned the green-bar report, and the choice
+went unanswered, so it stood. The metaphor is kept only where it works. Bands
+hold the eye on a row across a wide table. The two inks mark provenance: green
+is the form (headings, instructions) and black is what the system printed onto it
+(vendors, figures, reasons). Red marks only what stopped, always beside words
+that say the same.
+Rejected: the SaaS admin dashboard the brief named as wrong, and the
+working-papers pick, which is where most finance designs land.
+
+The decision is three visible choices rather than a dropdown, with none ticked
+in advance: an approval cannot be undone, so it is chosen rather than inherited.
+The form still posts without JavaScript, and `scripts/check_console.py` now
+asserts that the exception reads in words *and* that the billed and agreed
+prices are on the page. Once a person has approved or rejected an invoice, the
+verdict line leads with that decision; the matcher's "Blocked" is kept below as
+what stopped it, not left as the headline of a settled invoice.
+
+**What the line table found on its first day.** The demo's clean and
+bank-redirect invoices list three lines worth 662.40 and state a subtotal of
+306.80, and the matcher cleared them. `_check_document_arithmetic` checks
+subtotal plus tax against the total and each line against its own quantity and
+price, but never the lines against the subtotal, so an invoice can itemise one
+amount and charge another. The test fixture (`build_spec`) has carried the
+mismatch since M1, which is why no test noticed. It is recorded here and not
+fixed in this increment: the fix changes the fixture that the unit, integration
+and evaluation suites all build on, and it gets its own decision (D-039) rather
+than riding along with a redesign.
+
+---
+
 ## D-037 — A worker that lost its lease commits nothing, and a document is paid at most once at a time
 
 **Date:** 2026-09-30 · **Status:** accepted

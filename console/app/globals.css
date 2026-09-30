@@ -1,30 +1,69 @@
 /*
- * One stylesheet. There is one table and one form in this application, and an
- * abstraction over a population of one is a guess about a second case that does
- * not exist yet.
+ * One stylesheet, one world: the exception run printed on green-bar
+ * continuous stationery.
  *
- * No animation anywhere. A queue traversed two hundred times a day is a tool,
- * and motion in a tool is friction with a bow on it.
+ * The metaphor is kept only where it does a job. The bands are there because
+ * they were always there for the same reason: they hold the eye on one row
+ * across a wide table. The two inks are provenance. Green is the form, printed
+ * before any invoice existed: headings, column titles, instructions. Black is
+ * what the system printed onto it: vendors, figures, reasons. A second, red
+ * ribbon prints only what stopped. Anything else from the paper (tractor
+ * holes, tear-off stubs) did no work here and is not here.
+ *
+ * Every vertical measure is a whole number of printer lines (--line), or a
+ * half or quarter of one, so the page keeps its pitch however much text an
+ * invoice brings with it.
+ *
+ * Motion: one moment. Hovering or tabbing through a table lays a reading ruler
+ * under the row you are on, the way these printouts were read with a ruler
+ * under the line. Beyond that, only controls answer a press: a button gives a
+ * pixel and a ticked box fills. Nothing moves for effect.
  */
 
 :root {
-  --ink: #16181d;
-  --ink-soft: #5b6270;
-  --line: #dfe3ea;
-  --page: #f7f8fa;
-  --card: #ffffff;
+  color-scheme: light;
 
-  /* Severity, and nothing else, is allowed to use colour to carry meaning --
-     and it is always paired with a word, because roughly one man in twelve
-     cannot rely on the red. */
-  --block: #a3231f;
-  --block-bg: #fdf0ef;
-  --review: #8a5a00;
-  --review-bg: #fdf6e7;
-  --clear: #1c6b3f;
-  --clear-bg: #eef7f1;
+  --paper: #f4f7f2;
+  --band: #e3eedf;
+  --ruled: #d3e4cd;
+  --form: #3b6843;
+  --rule: #a8c5a2;
+  --ink: #1a1f1b;
+  --ink-soft: #465049;
+  --red: #ae2219;
+  --select: #c4ddbd;
 
-  --focus: #1a4fd6;
+  --line: 1.375rem;
+  --sans: var(--font-form), "Arial Narrow", system-ui, sans-serif;
+  --mono: var(--font-print), ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #111612;
+    --band: #182019;
+    --ruled: #243226;
+    --form: #8fc795;
+    --rule: #37523c;
+    --ink: #dfe8dc;
+    --ink-soft: #aab8a8;
+    --red: #ff8e80;
+    --select: #2f4a34;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #111612;
+  --band: #182019;
+  --ruled: #243226;
+  --form: #8fc795;
+  --rule: #37523c;
+  --ink: #dfe8dc;
+  --ink-soft: #aab8a8;
+  --red: #ff8e80;
+  --select: #2f4a34;
 }
 
 * {
@@ -32,26 +71,47 @@
 }
 
 html {
-  /* The queue is keyboard-first: a reviewer tabs down it. Anchored jumps must
-     not put the target under the sticky header. */
-  scroll-padding-top: 5rem;
+  /* Anchored jumps must not land under the masthead. */
+  scroll-padding-top: calc(var(--line) * 4);
+  scrollbar-color: var(--rule) var(--paper);
 }
 
 body {
   margin: 0;
-  background: var(--page);
+  background: var(--paper);
   color: var(--ink);
-  font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  font: 400 0.9375rem / var(--line) var(--sans);
+  font-stretch: 92%;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--select);
+  color: var(--ink);
+}
+
+textarea {
+  caret-color: var(--red);
 }
 
 a {
-  color: var(--focus);
+  color: inherit;
+  text-decoration-line: underline;
+  text-decoration-color: var(--form);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.22em;
 }
 
-/* One visible focus ring, everywhere, and never removed. Keyboard triage is
-   the primary way this screen is used, not an accommodation bolted on. */
+a:hover {
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--ink);
+}
+
+/* One active edge, everywhere, never removed: keyboard triage is how this
+   screen is used, not an accommodation bolted on. */
 :focus-visible {
-  outline: 3px solid var(--focus);
+  outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
 
@@ -61,241 +121,553 @@ a {
 }
 .skip:focus {
   left: 1rem;
-  top: 0.5rem;
+  top: calc(var(--line) / 2);
   z-index: 10;
-  background: var(--card);
-  padding: 0.5rem 0.75rem;
-  border-radius: 6px;
+  background: var(--paper);
+  padding: 0 0.75rem;
+  line-height: calc(var(--line) * 2);
+  border: 2px solid var(--ink);
 }
 
-header.bar {
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ figures --- */
+
+/* Everything the system printed onto the form. */
+.print,
+.num,
+code {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  font-stretch: 87.5%;
+  font-variant-numeric: tabular-nums slashed-zero;
+  letter-spacing: 0;
+}
+
+.num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+code {
+  padding: 0 0.3em;
+  background: var(--band);
+}
+
+/* The second ribbon. Always beside words that say the same thing, so it is
+   never the only carrier of meaning. */
+.red {
+  color: var(--red);
+}
+
+.unit {
+  color: var(--ink-soft);
+  font-size: 0.75em;
+  margin-left: 0.35em;
+}
+
+/* ----------------------------------------------------------- masthead --- */
+
+.masthead {
   position: sticky;
   top: 0;
   z-index: 5;
+  background: var(--paper);
+  border-bottom: 3px double var(--form);
+}
+
+.masthead-inner {
+  max-width: 78rem;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0 1.75rem;
+  flex-wrap: wrap;
+  min-height: calc(var(--line) * 2);
+  line-height: calc(var(--line) * 2);
+}
+
+.brand {
+  font-family: var(--sans);
+  font-stretch: 75%;
+  font-weight: 800;
+  font-size: 1.0625rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--form);
+  text-decoration: none;
+}
+
+.masthead nav {
+  display: flex;
+  gap: 1.25rem;
+}
+
+.masthead nav a,
+.form-label {
+  font-stretch: 75%;
+  font-weight: 700;
+  font-size: 0.8125rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--form);
+}
+
+.masthead nav a {
+  text-decoration: none;
+  padding-bottom: 0.2rem;
+  border-bottom: 2px solid transparent;
+}
+
+.masthead nav a:hover {
+  border-bottom-color: var(--rule);
+}
+
+.masthead nav a[aria-current="page"] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+.reader {
+  margin-left: auto;
   display: flex;
   align-items: baseline;
   gap: 1rem;
-  padding: 0.85rem 1.5rem;
-  background: var(--card);
-  border-bottom: 1px solid var(--line);
-}
-
-header.bar h1 {
-  font-size: 1rem;
-  margin: 0;
-  letter-spacing: -0.01em;
-}
-
-header.bar .who {
-  margin-left: auto;
   color: var(--ink-soft);
-  font-size: 0.85rem;
+}
+
+.reader form {
+  display: inline;
 }
 
 main {
-  max-width: 62rem;
+  max-width: 78rem;
   margin: 0 auto;
-  padding: 1.75rem 1.5rem 5rem;
+  padding: calc(var(--line) * 1.5) 1.5rem calc(var(--line) * 4);
+}
+
+/* -------------------------------------------------------- report head --- */
+
+/* Title left, the run line right, one rule under both. No label above the
+   title: the title says what the page is. */
+.report-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0 2rem;
+  border-bottom: 1px solid var(--form);
+  padding-bottom: calc(var(--line) / 2);
+  margin-bottom: var(--line);
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--sans);
+  font-stretch: 75%;
+  color: var(--form);
+  margin: 0;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: 2rem;
+  line-height: calc(var(--line) * 2);
+  font-weight: 800;
+  letter-spacing: 0;
+  word-spacing: 0.04em;
 }
 
 h2 {
-  font-size: 1.35rem;
-  letter-spacing: -0.02em;
-  margin: 0 0 0.35rem;
+  font-size: 1.25rem;
+  line-height: calc(var(--line) * 1.5);
+  font-weight: 750;
+  margin: calc(var(--line) * 2) 0 calc(var(--line) / 2);
 }
 
+h3 {
+  font-size: 0.8125rem;
+  line-height: var(--line);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: calc(var(--line) * 1.5) 0 calc(var(--line) / 2);
+}
+
+.run {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0 1.5rem;
+  color: var(--ink-soft);
+  text-align: right;
+}
+
+.run b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* The form's printed instructions: green, the product explaining itself. */
 .lede {
+  color: var(--form);
+  margin: 0 0 var(--line);
+  max-width: 68ch;
+}
+
+.note {
   color: var(--ink-soft);
-  margin: 0 0 1.5rem;
-  max-width: 60ch;
+  max-width: 68ch;
+  margin: calc(var(--line) / 2) 0 0;
 }
 
-.card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 1.1rem 1.25rem;
-  margin-bottom: 0.9rem;
+.filter {
+  display: inline-flex;
+  gap: 0.75rem;
 }
 
-.card h3 {
-  margin: 0 0 0.3rem;
-  font-size: 1rem;
-}
-
-.meta {
-  color: var(--ink-soft);
-  font-size: 0.85rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 1rem;
-  margin: 0.35rem 0 0;
-}
-
-.tag {
-  display: inline-block;
-  font-size: 0.78rem;
+.filter a[aria-current="true"] {
+  color: var(--ink);
   font-weight: 600;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  border: 1px solid transparent;
-}
-.tag.block {
-  color: var(--block);
-  background: var(--block-bg);
-  border-color: #f3cfcd;
-}
-.tag.review {
-  color: var(--review);
-  background: var(--review-bg);
-  border-color: #f0dfb4;
-}
-.tag.clear {
-  color: var(--clear);
-  background: var(--clear-bg);
-  border-color: #cfe6d9;
+  text-decoration: none;
 }
 
-.exception {
-  border-left: 3px solid var(--line);
-  padding: 0.15rem 0 0.15rem 0.85rem;
-  margin: 0.85rem 0;
-}
-.exception.block {
-  border-left-color: var(--block);
-}
-.exception.review {
-  border-left-color: var(--review);
-}
-.exception p {
-  margin: 0.25rem 0 0;
-}
-
-.skipped {
-  border-left: 3px dashed var(--review);
-  padding: 0.15rem 0 0.15rem 0.85rem;
-  margin: 0.85rem 0;
-  color: var(--ink-soft);
-}
-
-.refusal {
-  background: var(--review-bg);
-  border: 1px solid #f0dfb4;
-  border-radius: 8px;
-  padding: 0.85rem 1rem;
-  margin: 1rem 0 0;
-}
-
-.conflict {
-  background: var(--block-bg);
-  border: 1px solid #f3cfcd;
-  border-radius: 8px;
-  padding: 0.85rem 1rem;
-  margin: 1rem 0 0;
-}
-
-form.decide {
-  margin-top: 1.25rem;
-  border-top: 1px solid var(--line);
-  padding-top: 1.25rem;
-}
-
-label {
-  display: block;
-  font-weight: 600;
-  margin-bottom: 0.35rem;
-}
-
-.hint {
-  font-weight: 400;
-  color: var(--ink-soft);
-  font-size: 0.85rem;
-  margin: -0.2rem 0 0.5rem;
-}
-
-textarea,
-select {
-  width: 100%;
-  font: inherit;
-  padding: 0.55rem 0.65rem;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--card);
-  color: inherit;
-}
-
-textarea {
-  min-height: 5rem;
-  resize: vertical;
-}
-
-.actions {
-  display: flex;
-  gap: 0.6rem;
-  margin-top: 1rem;
-  flex-wrap: wrap;
-}
-
-button {
-  font: inherit;
-  font-weight: 600;
-  padding: 0.55rem 1.1rem;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--card);
-  color: inherit;
-  cursor: pointer;
-}
-
-button.primary {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: #fff;
-}
-
-button[disabled] {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
+/* ------------------------------------------------------------- tables --- */
 
 table {
   width: 100%;
   border-collapse: collapse;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  overflow: hidden;
 }
 
-th,
-td {
+caption {
   text-align: left;
-  padding: 0.7rem 0.9rem;
-  border-bottom: 1px solid var(--line);
-  vertical-align: top;
+  color: var(--form);
+  padding-bottom: calc(var(--line) / 2);
 }
 
-th {
-  font-size: 0.8rem;
+thead th {
+  font-family: var(--sans);
+  font-stretch: 75%;
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  color: var(--form);
+  text-align: left;
+  vertical-align: bottom;
+  padding: 0 0.75rem calc(var(--line) / 4);
+  border-bottom: 1px solid var(--form);
+  white-space: nowrap;
+}
+
+/* Column titles are the form's, even over a column of figures. */
+thead th.num {
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  font-stretch: 75%;
+  letter-spacing: 0.08em;
+  text-align: right;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+/* Column groups: "Quantity" over ordered, received, billed. */
+thead tr.groups th {
+  border-bottom: 1px solid var(--rule);
+  text-align: center;
+  padding-bottom: 0;
+}
+
+td {
+  padding: calc(var(--line) / 2) 0.75rem;
+  vertical-align: top;
+  line-height: var(--line);
+}
+
+/* The bands. */
+tbody tr:nth-child(even of :not(.section)) {
+  background: var(--band);
+}
+
+/* The reading ruler: laid under the row you are on, by pointer or by tab. */
+tbody tr:not(.section) {
+  transition:
+    background-color 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+tbody tr:not(.section):hover,
+tbody tr:not(.section):focus-within {
+  background: var(--ruled);
+  box-shadow: inset 0 -2px 0 var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  tbody tr:not(.section) {
+    transition: none;
+  }
+}
+
+/* A new page of the run: perforation above, its own heading. */
+tr.section th {
+  font-family: var(--sans);
+  font-stretch: 75%;
+  font-weight: 700;
+  font-size: 0.8125rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--form);
+  text-align: left;
+  padding: var(--line) 0.75rem calc(var(--line) / 4);
+  border-bottom: 1px solid var(--rule);
+}
+
+tbody + tbody tr.section th {
+  border-top: 1px dashed var(--form);
+}
+
+tr.section th .count {
+  font-family: var(--mono);
+  font-stretch: 87.5%;
+  letter-spacing: 0;
+  margin-left: 0.5rem;
   color: var(--ink-soft);
 }
 
-tr:last-child td {
-  border-bottom: none;
+tfoot td {
+  border-top: 1px solid var(--ink);
+  border-bottom: 3px double var(--ink);
+  font-weight: 600;
+}
+
+.sub {
+  display: block;
+  color: var(--ink-soft);
+}
+
+.status {
+  font-family: var(--mono);
+  font-stretch: 87.5%;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--ink-soft);
+}
+
+/* ---------------------------------------------------------- the queue --- */
+
+.queue td.vendor a {
+  font-weight: 600;
+}
+
+.queue .why {
+  display: block;
+}
+
+/* One state vocabulary: the same words wherever an invoice is not yours. */
+.not-yours {
+  color: var(--ink-soft);
+  white-space: nowrap;
 }
 
 .empty {
-  color: var(--ink-soft);
-  padding: 2rem 0;
+  padding: calc(var(--line) * 2) 0;
+  color: var(--form);
+  max-width: 60ch;
 }
 
-code {
-  font: 0.85em ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  background: var(--page);
-  padding: 0.1rem 0.35rem;
-  border-radius: 4px;
+/* ------------------------------------------------------- the invoice --- */
+
+.back {
+  display: inline-block;
+  margin-bottom: calc(var(--line) / 2);
+}
+
+.invoice-head .total {
+  font-family: var(--mono);
+  font-stretch: 87.5%;
+  font-size: 1.75rem;
+  line-height: calc(var(--line) * 2);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums slashed-zero;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.invoice-head .total .unit {
+  font-size: 0.875rem;
+}
+
+/* The accountant's mark under a final figure. */
+.invoice-head .total,
+.specimen .run .figure {
+  justify-self: end;
+  border-bottom: 3px double var(--ink);
+  line-height: 1.2;
+  padding-bottom: 0.15rem;
+  margin: 0 0 calc(var(--line) / 2);
+}
+
+.end-of-run td {
+  font-family: var(--mono);
+  font-stretch: 87.5%;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  text-align: center;
+  padding-top: calc(var(--line) / 2);
+}
+
+.end-of-run span {
+  white-space: nowrap;
+}
+
+@media (min-width: 1200px) {
+  /* Printer pitch: the deadline and its timestamp on one line. */
+  .queue td.due .sub {
+    display: inline;
+    margin-left: 0.6rem;
+  }
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.75rem;
+  margin: 0;
+  color: var(--ink-soft);
+}
+
+.facts dt {
+  display: inline;
+  color: var(--form);
+  margin-right: 0.4rem;
+}
+
+.facts dd {
+  display: inline;
+  margin: 0;
+}
+
+.facts div {
+  white-space: nowrap;
+}
+
+/* The verdict, stated once, in words, with its explanation. */
+.verdict {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0 1.25rem;
+  align-items: baseline;
+  padding: calc(var(--line) / 2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.verdict .status {
+  font-size: 0.875rem;
+}
+
+.verdict p {
+  margin: 0;
+  color: var(--form);
+  max-width: 72ch;
+}
+
+.findings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.findings li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 1.5rem;
+  padding: calc(var(--line) / 2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.findings li strong {
+  font-weight: 650;
+}
+
+.findings .route {
+  text-align: right;
+  white-space: nowrap;
+  color: var(--ink-soft);
+}
+
+.findings .said {
+  grid-column: 1 / -1;
+  color: var(--ink-soft);
+}
+
+.lines td.over {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.lines .desc {
+  max-width: 30ch;
+}
+
+.lines .mark {
+  display: block;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Payment stations, in order, the current one printed in ink. */
+.stations {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.stations li {
+  flex: 1 1 8rem;
+  padding: calc(var(--line) / 2) 0.75rem;
+  color: var(--ink-soft);
+  border-right: 1px solid var(--rule);
+}
+
+.stations li:last-child {
+  border-right: 0;
+}
+
+.stations li[aria-current="step"] {
+  color: var(--ink);
+  background: var(--band);
+  box-shadow: inset 0 -2px 0 var(--ink);
+  font-weight: 600;
+}
+
+.stations li.failed[aria-current="step"] {
+  color: var(--red);
+  box-shadow: inset 0 -2px 0 var(--red);
 }
 
 /* The agent's escalation.
@@ -305,78 +677,527 @@ code {
  * this is something a model said after reading a document the supplier wrote,
  * and on a hostile invoice it is the supplier talking at one remove.
  *
- * So it is set apart rather than emphasised. A styling that made it look
- * authoritative would undo the containment `domain/triage.py` spends a module
- * building -- the text would still be attacker-influenced and would now read as
- * a finding. Quoted, greyed, and attributed is the whole of the treatment. */
-.card.agent {
-  background: var(--page);
-  border-style: dashed;
+ * So it is set apart rather than emphasised: fenced by perforations, in the
+ * form's hand rather than the printer's, quoted and attributed. A styling that
+ * made it look authoritative would undo the containment `domain/triage.py`
+ * spends a module building. */
+.agent {
+  margin-top: calc(var(--line) * 2);
+  padding: var(--line) 0;
+  border-top: 1px dashed var(--form);
+  border-bottom: 1px dashed var(--form);
+  color: var(--ink-soft);
 }
 
-.card.agent h3 {
+.agent h2 {
+  margin-top: 0;
+  font-size: 1rem;
+  line-height: var(--line);
   color: var(--ink-soft);
+}
+
+.agent blockquote {
+  margin: calc(var(--line) / 2) 0;
+  padding: 0 0 0 1.25rem;
+  font-style: italic;
+  max-width: 68ch;
+}
+
+.agent p {
+  margin: calc(var(--line) / 2) 0 0;
+  max-width: 68ch;
+}
+
+/* ---------------------------------------------------- the decision form --- */
+
+/* A printed section of the form: boxes to tick, lines to write on. */
+.decide {
+  margin-top: calc(var(--line) * 2);
+  border-top: 3px double var(--form);
+  padding-top: var(--line);
+  display: grid;
+  grid-template-columns: minmax(0, 17rem) minmax(0, 1fr);
+  gap: var(--line) 2.5rem;
+}
+
+.decide h2 {
+  margin: 0;
+  grid-column: 1 / -1;
+}
+
+.decide fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.decide legend,
+.decide label.form-label {
+  display: block;
+  padding: 0;
+  margin-bottom: calc(var(--line) / 2);
+}
+
+.choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0 0.75rem;
+  align-items: start;
+  padding: calc(var(--line) / 4) 0;
+  cursor: pointer;
+}
+
+.choice input {
+  appearance: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  margin: 0.125rem 0 0;
+  border: 1.5px solid var(--form);
+  background: var(--paper);
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+}
+
+.choice input::before {
+  content: "";
+  width: 0.625rem;
+  height: 0.625rem;
+  background: var(--ink);
+  transform: scale(0);
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.choice input:checked {
+  border-color: var(--ink);
+}
+
+.choice input:checked::before {
+  transform: scale(1);
+}
+
+.choice span {
   font-weight: 600;
 }
 
-.card.agent blockquote {
-  margin: 0.75rem 0;
-  padding: 0 0 0 0.85rem;
-  border-left: 3px solid var(--line);
+.choice small {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 400;
   color: var(--ink-soft);
-  font-style: italic;
 }
 
-/* The landing page.
- *
- * Numbered rather than bulleted, because the six steps are a sequence and the
- * order is the explanation. The counter sits in the margin so the titles form
- * a clean left edge a reader can skim without reading the prose at all —
- * somebody evaluating this in thirty seconds should still leave knowing what
- * the thing does. */
+.hint {
+  color: var(--form);
+  margin: 0 0 calc(var(--line) / 2);
+  max-width: 60ch;
+}
+
+/* Ruled writing lines at the printer pitch, so the box reads as a place to
+   write and the text sits on the lines. */
+textarea {
+  display: block;
+  width: 100%;
+  min-height: calc(var(--line) * 5);
+  resize: vertical;
+  font: inherit;
+  line-height: var(--line);
+  color: var(--ink);
+  padding: 0 0.25rem;
+  border: 0;
+  border-top: 1px solid var(--form);
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(var(--line) - 1px),
+      var(--rule) calc(var(--line) - 1px),
+      var(--rule) var(--line)
+    )
+    var(--paper);
+  background-attachment: local;
+}
+
+textarea::placeholder {
+  color: var(--ink-soft);
+  font-style: italic;
+  opacity: 1;
+}
+
+textarea:focus-visible {
+  outline-offset: 4px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.5rem;
+  margin-top: var(--line);
+}
+
+button,
+a.button {
+  font: inherit;
+  font-family: var(--sans);
+  font-stretch: 75%;
+  font-weight: 700;
+  font-size: 0.875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: calc(var(--line) * 2 - 4px);
+  padding: 0 1.25rem;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+button.primary,
+a.button.primary {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+button:hover,
+a.button:hover {
+  background: var(--ruled);
+  color: var(--ink);
+}
+
+button.primary:hover,
+a.button.primary:hover {
+  background: var(--form);
+  border-color: var(--form);
+  color: var(--paper);
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+button[disabled] {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+button.quiet {
+  font-size: 0.75rem;
+  line-height: calc(var(--line) - 2px);
+  padding: 0 0.6rem;
+  border-width: 1px;
+}
+
+.permanent {
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+/* Two different things. A refusal ("not yours", "already decided") is the
+   system working, printed in the form's ink. A conflict is a submission the
+   server turned down, which is a stop, and only that gets the red ribbon. */
+.refusal,
+.conflict {
+  margin-top: var(--line);
+  padding: calc(var(--line) / 2) 0;
+  border-top: 1px solid var(--form);
+  border-bottom: 1px solid var(--rule);
+  max-width: 72ch;
+}
+
+.refusal .status {
+  display: block;
+  color: var(--ink-soft);
+}
+
+.conflict {
+  border-top: 2px solid var(--red);
+}
+
+.conflict strong {
+  color: var(--red);
+}
+
+.refusal p,
+.conflict p {
+  margin: calc(var(--line) / 4) 0 0;
+}
+
+/* ---------------------------------------------------------- the books --- */
+
+.balance {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0 1.5rem;
+  align-items: baseline;
+  margin: var(--line) 0 0;
+  padding: calc(var(--line) / 2) 0;
+}
+
+.balance p {
+  margin: 0;
+  color: var(--form);
+  max-width: 68ch;
+}
+
+.ledger td.account {
+  font-weight: 600;
+}
+
+.ledger .meaning {
+  display: block;
+  font-weight: 400;
+  color: var(--ink-soft);
+  max-width: 56ch;
+}
+
+/* --------------------------------------------------------- front door --- */
+
+.door {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  gap: calc(var(--line) * 2) 3.5rem;
+  align-items: start;
+  padding-top: var(--line);
+}
+
+.door h1 {
+  font-size: clamp(2.5rem, 4.2vw, 3.75rem);
+  line-height: 1.02;
+  letter-spacing: -0.02em;
+  margin-bottom: var(--line);
+}
+
+.door .lede {
+  font-size: 1.0625rem;
+  line-height: calc(var(--line) * 1.1);
+}
+
+/* The specimen: one exception from the demo data, printed the way the console
+   prints it. */
+.specimen {
+  border-top: 3px double var(--form);
+  padding-top: calc(var(--line) / 2);
+}
+
+.specimen .run {
+  justify-content: space-between;
+  margin-bottom: calc(var(--line) / 2);
+}
+
+.specimen th,
+.specimen td {
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}
+
+.specimen .desc {
+  min-width: 18ch;
+}
+
+.specimen .routed {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0 1rem;
+  padding: calc(var(--line) / 2) 0.75rem;
+  border-top: 1px solid var(--ink);
+}
+
+.specimen .label {
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+  margin: calc(var(--line) / 2) 0 0;
+}
+
 .steps {
   list-style: none;
-  counter-reset: step;
+  margin: 0;
   padding: 0;
-  margin: 1rem 0 2rem;
+  counter-reset: step;
+  columns: 2 22rem;
+  column-gap: 3.5rem;
 }
 
 .steps li {
   counter-increment: step;
-  position: relative;
-  padding: 0 0 0 2.5rem;
-  margin: 0 0 1.25rem;
+  break-inside: avoid;
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  padding: calc(var(--line) / 2) 0;
+  border-top: 1px solid var(--rule);
 }
 
 .steps li::before {
-  content: counter(step);
-  position: absolute;
-  left: 0;
-  top: 0.05rem;
-  width: 1.6rem;
-  height: 1.6rem;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  text-align: center;
-  line-height: 1.55rem;
-  font-size: 0.8rem;
+  content: counter(step, decimal-leading-zero);
+  font-family: var(--mono);
+  font-stretch: 87.5%;
+  font-size: 0.8125rem;
+  color: var(--form);
+}
+
+.steps strong {
+  display: block;
+  font-weight: 650;
+}
+
+.steps p {
+  grid-column: 2;
+  margin: 0;
   color: var(--ink-soft);
 }
 
-.steps li p {
-  margin: 0.2rem 0 0;
-  color: var(--ink-soft);
+.properties tbody th {
+  width: 20rem;
+  text-align: left;
+  vertical-align: top;
+  font-weight: 650;
+  padding: calc(var(--line) / 2) 0.75rem;
 }
 
-a.primary {
-  display: inline-block;
-  background: var(--ink);
-  color: var(--card);
-  padding: 0.55rem 1.1rem;
-  border-radius: 8px;
-  text-decoration: none;
+.properties tbody td {
+  max-width: 72ch;
 }
 
-a.primary:hover {
-  text-decoration: underline;
+.prose p {
+  max-width: 68ch;
+  margin: 0 0 var(--line);
+}
+
+.close {
+  margin-top: calc(var(--line) * 2);
+  padding-top: var(--line);
+  border-top: 3px double var(--form);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--line) 2rem;
+}
+
+.close p {
+  margin: 0;
+  color: var(--form);
+  max-width: 52ch;
+}
+
+/* ------------------------------------------------------------- narrow --- */
+
+@media (max-width: 760px) {
+  .masthead-inner,
+  main {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .masthead-inner {
+    gap: 0 1.25rem;
+    line-height: calc(var(--line) * 1.5);
+    padding-top: calc(var(--line) / 4);
+    padding-bottom: calc(var(--line) / 4);
+  }
+
+  .reader {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .report-head,
+  .door,
+  .decide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  table.stack tbody th[scope="row"] {
+    display: block;
+    width: auto;
+    padding: 0;
+  }
+
+  .run {
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  h1 {
+    font-size: 1.625rem;
+    line-height: calc(var(--line) * 1.5);
+  }
+
+  .invoice-head .total {
+    text-align: left;
+    font-size: 1.375rem;
+  }
+
+  /* Tables become one printed record per row, each figure beside its column
+     title, so nothing is ever a bare number. */
+  table.stack thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  table.stack,
+  table.stack tbody,
+  table.stack tfoot,
+  table.stack tr,
+  table.stack td {
+    display: block;
+  }
+
+  table.stack tr:not(.section) {
+    padding: calc(var(--line) / 2) 0.5rem;
+  }
+
+  table.stack tr.section th {
+    display: block;
+  }
+
+  table.stack td {
+    position: relative;
+    padding: 0 0 0 8.25rem;
+    text-align: left;
+  }
+
+  table.stack td::before {
+    position: absolute;
+    left: 0;
+    top: 0.1rem;
+    width: 7.5rem;
+    content: attr(data-label);
+    font-family: var(--sans);
+    font-stretch: 75%;
+    font-weight: 700;
+    font-size: 0.6875rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--form);
+  }
+
+  table.stack td.num {
+    text-align: left;
+  }
+
+  table.stack tr.end-of-run td {
+    padding-left: 0;
+    text-align: left;
+  }
+
+  .findings li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .findings .route {
+    text-align: left;
+  }
+
+  .steps {
+    columns: 1;
+  }
 }

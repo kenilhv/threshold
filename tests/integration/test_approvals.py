@@ -304,6 +304,37 @@ class TestDeciding:
         assert approved.status_code == 201
 
 
+class TestTheEvidenceTravelsWithTheVerdict:
+    """Ordered, received and billed, per line, beside the verdict.
+
+    A reviewer shown "price variance" and no prices has to trust the matcher;
+    one shown both prices can check it. These pin that the numbers are the ones
+    the matcher judged, not a restatement of its conclusion.
+    """
+
+    def test_each_invoice_line_arrives_beside_its_order_line(self, client: httpx.Client) -> None:
+        document_id = submit(client, over_billed=True)
+        match = match_of(client, document_id)
+        lines = match["lines"]
+        assert isinstance(lines, list)
+        assert len(lines) == len(match["line_pairs"])  # type: ignore[arg-type]
+        assert lines, "vacuity: the fixture invoice has lines"
+
+        for line in lines:
+            assert line["po_line"] is not None
+            assert Decimal(line["billed_unit_price"]) == Decimal("21")
+            # The over-billed fixture bills above the agreed price; the agreed
+            # price is the order's, so it must be the lower of the two.
+            assert Decimal(line["agreed_unit_price"]) < Decimal("21")
+            assert line["ordered_quantity"] is not None
+            assert line["received_quantity"] is not None
+
+    def test_a_clean_invoice_bills_what_was_agreed(self, client: httpx.Client) -> None:
+        match = match_of(client, submit(client, over_billed=False))
+        for line in match["lines"]:  # type: ignore[attr-defined]
+            assert Decimal(line["billed_unit_price"]) == Decimal(line["agreed_unit_price"])
+
+
 class TestTheTrailIsAppendOnly:
     def test_every_decision_survives_the_next_one(self, client: httpx.Client) -> None:
         document_id = submit(client, over_billed=True)

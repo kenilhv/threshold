@@ -97,6 +97,25 @@ export type MatchView = {
   } | null;
   escalation: EscalationView | null;
   payment: PaymentView | null;
+  lines: LineEvidence[];
+};
+
+/**
+ * One invoice line beside the order line it was paired with: the three
+ * documents of the three-way match, as the numbers the matcher judged. Every
+ * figure is the stored decimal as a string; `lib/format.ts` trims and groups
+ * it and computes nothing. Null means not read, or not on the order.
+ */
+export type LineEvidence = {
+  invoice_line: number;
+  description: string;
+  billed_quantity: string | null;
+  billed_unit_price: string | null;
+  billed_line_total: string | null;
+  po_line: number | null;
+  ordered_quantity: string | null;
+  agreed_unit_price: string | null;
+  received_quantity: string | null;
 };
 
 export type DecisionView = {

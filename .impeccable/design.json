@@ -1,0 +1,356 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-30T00:00:00Z",
+  "title": "Design System: Threshold",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "canonical": "oklch(97.2% 0.007 132)",
+        "darkScheme": "#111612",
+        "tonalRamp": [
+          "oklch(15% 0.004 132)",
+          "oklch(26% 0.004 132)",
+          "oklch(37% 0.007 132)",
+          "oklch(48% 0.007 132)",
+          "oklch(59% 0.007 132)",
+          "oklch(70% 0.007 132)",
+          "oklch(82% 0.007 132)",
+          "oklch(95% 0.004 132)"
+        ]
+      },
+      "band": {
+        "role": "neutral",
+        "displayName": "Band",
+        "canonical": "oklch(93.7% 0.023 137)",
+        "darkScheme": "#182019",
+        "tonalRamp": [
+          "oklch(15% 0.014 137)",
+          "oklch(26% 0.014 137)",
+          "oklch(37% 0.023 137)",
+          "oklch(48% 0.023 137)",
+          "oklch(59% 0.023 137)",
+          "oklch(70% 0.023 137)",
+          "oklch(82% 0.023 137)",
+          "oklch(95% 0.014 137)"
+        ]
+      },
+      "ruled": {
+        "role": "neutral",
+        "displayName": "Ruled Band",
+        "canonical": "oklch(90.0% 0.036 137)",
+        "darkScheme": "#243226",
+        "tonalRamp": [
+          "oklch(15% 0.022 137)",
+          "oklch(26% 0.022 137)",
+          "oklch(37% 0.036 137)",
+          "oklch(48% 0.036 137)",
+          "oklch(59% 0.036 137)",
+          "oklch(70% 0.036 137)",
+          "oklch(82% 0.036 137)",
+          "oklch(95% 0.022 137)"
+        ]
+      },
+      "select": {
+        "role": "neutral",
+        "displayName": "Selection Green",
+        "canonical": "oklch(87.0% 0.051 139)",
+        "darkScheme": "#2f4a34",
+        "tonalRamp": [
+          "oklch(15% 0.031 139)",
+          "oklch(26% 0.031 139)",
+          "oklch(37% 0.051 139)",
+          "oklch(48% 0.051 139)",
+          "oklch(59% 0.051 139)",
+          "oklch(70% 0.051 139)",
+          "oklch(82% 0.051 139)",
+          "oklch(95% 0.031 139)"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Hairline Green",
+        "canonical": "oklch(79.2% 0.058 140)",
+        "darkScheme": "#37523c",
+        "tonalRamp": [
+          "oklch(15% 0.035 140)",
+          "oklch(26% 0.035 140)",
+          "oklch(37% 0.058 140)",
+          "oklch(48% 0.058 140)",
+          "oklch(59% 0.058 140)",
+          "oklch(70% 0.058 140)",
+          "oklch(82% 0.058 140)",
+          "oklch(95% 0.035 140)"
+        ]
+      },
+      "form": {
+        "role": "primary",
+        "displayName": "Form Green",
+        "canonical": "oklch(47.4% 0.078 149)",
+        "darkScheme": "#8fc795",
+        "tonalRamp": [
+          "oklch(15% 0.047 149)",
+          "oklch(26% 0.047 149)",
+          "oklch(37% 0.078 149)",
+          "oklch(48% 0.078 149)",
+          "oklch(59% 0.078 149)",
+          "oklch(70% 0.078 149)",
+          "oklch(82% 0.078 149)",
+          "oklch(95% 0.047 149)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Print Black",
+        "canonical": "oklch(23.3% 0.011 151)",
+        "darkScheme": "#dfe8dc",
+        "tonalRamp": [
+          "oklch(15% 0.007 151)",
+          "oklch(26% 0.007 151)",
+          "oklch(37% 0.011 151)",
+          "oklch(48% 0.011 151)",
+          "oklch(59% 0.011 151)",
+          "oklch(70% 0.011 151)",
+          "oklch(82% 0.011 151)",
+          "oklch(95% 0.007 151)"
+        ]
+      },
+      "ink-soft": {
+        "role": "neutral",
+        "displayName": "Faded Print",
+        "canonical": "oklch(42.0% 0.017 155)",
+        "darkScheme": "#aab8a8",
+        "tonalRamp": [
+          "oklch(15% 0.010 155)",
+          "oklch(26% 0.010 155)",
+          "oklch(37% 0.017 155)",
+          "oklch(48% 0.017 155)",
+          "oklch(59% 0.017 155)",
+          "oklch(70% 0.017 155)",
+          "oklch(82% 0.017 155)",
+          "oklch(95% 0.010 155)"
+        ]
+      },
+      "red": {
+        "role": "secondary",
+        "displayName": "Ribbon Red",
+        "canonical": "oklch(48.8% 0.177 29)",
+        "darkScheme": "#ff8e80",
+        "tonalRamp": [
+          "oklch(15% 0.106 29)",
+          "oklch(26% 0.106 29)",
+          "oklch(37% 0.177 29)",
+          "oklch(48% 0.177 29)",
+          "oklch(59% 0.177 29)",
+          "oklch(70% 0.177 29)",
+          "oklch(82% 0.177 29)",
+          "oklch(95% 0.106 29)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "The front door's headline only."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Report title, left of the run line; two printer lines."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Section headings inside a report."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Prose, table cells, vendor names; one printer line."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Navigation, form labels, report-section rows."
+      },
+      "label-column": {
+        "displayName": "Column title",
+        "purpose": "Table column titles, including over figures."
+      },
+      "label-button": {
+        "displayName": "Button label",
+        "purpose": "Button text."
+      },
+      "brand": {
+        "displayName": "Brand",
+        "purpose": "The Threshold wordmark in the masthead."
+      },
+      "print": {
+        "displayName": "Print",
+        "purpose": "Every figure, date, code, username and the run line."
+      },
+      "status": {
+        "displayName": "Status",
+        "purpose": "BLOCKED, REVIEW, DECIDED; the end-of-run line."
+      },
+      "figure-total": {
+        "displayName": "Figure total",
+        "purpose": "The one invoice total, over the accountant's double rule."
+      }
+    },
+    "shadows": [
+      {
+        "name": "printed-underline",
+        "value": "inset 0 -2px 0 var(--ink)",
+        "purpose": "A printed 2px underline under the row being read and the current payment station (red on a failed station). Not elevation; the system has no drop shadows."
+      }
+    ],
+    "motion": [
+      {
+        "name": "reading-ruler",
+        "value": "background-color 150ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 150ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "The one motion: laying the reading ruler under a table row on hover or focus-within. Disabled under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow",
+        "value": "760px",
+        "purpose": "max-width: one column; stacking tables become printed records."
+      },
+      {
+        "name": "wide",
+        "value": "1200px",
+        "purpose": "min-width: a deadline and its timestamp share one line in the queue."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single commitment on a page: record decision, sign in.",
+      "html": "<button class=\"ds-btn-primary\">Record decision</button>",
+      "css": ":host{--paper:#f4f7f2;--band:#e3eedf;--ruled:#d3e4cd;--form:#3b6843;--rule:#a8c5a2;--ink:#1a1f1b;--ink-soft:#465049;--red:#ae2219;--line:1.375rem;--sans:Archivo,'Arial Narrow',system-ui,sans-serif;--mono:'Martian Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;}.ds-btn-primary{font-family:var(--sans);font-stretch:75%;font-weight:700;font-size:0.875rem;letter-spacing:0.08em;text-transform:uppercase;line-height:calc(var(--line) * 2 - 4px);padding:0 1.25rem;border:2px solid var(--ink);border-radius:0;cursor:pointer;background:var(--ink);color:var(--paper);}.ds-btn-primary:hover{background:var(--form);border-color:var(--form);color:var(--paper);}.ds-btn-primary:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Outlined printed button for a secondary action.",
+      "html": "<button class=\"ds-btn\">Hold</button>",
+      "css": ":host{--paper:#f4f7f2;--band:#e3eedf;--ruled:#d3e4cd;--form:#3b6843;--rule:#a8c5a2;--ink:#1a1f1b;--ink-soft:#465049;--red:#ae2219;--line:1.375rem;--sans:Archivo,'Arial Narrow',system-ui,sans-serif;--mono:'Martian Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;}.ds-btn{font-family:var(--sans);font-stretch:75%;font-weight:700;font-size:0.875rem;letter-spacing:0.08em;text-transform:uppercase;line-height:calc(var(--line) * 2 - 4px);padding:0 1.25rem;border:2px solid var(--ink);border-radius:0;cursor:pointer;background:var(--paper);color:var(--ink);}.ds-btn:hover{background:var(--ruled);color:var(--ink);}.ds-btn:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "One printer line tall; sign out in the masthead.",
+      "html": "<button class=\"ds-btn-quiet\">Sign out</button>",
+      "css": ":host{--paper:#f4f7f2;--band:#e3eedf;--ruled:#d3e4cd;--form:#3b6843;--rule:#a8c5a2;--ink:#1a1f1b;--ink-soft:#465049;--red:#ae2219;--line:1.375rem;--sans:Archivo,'Arial Narrow',system-ui,sans-serif;--mono:'Martian Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;}.ds-btn-quiet{font-family:var(--sans);font-stretch:75%;font-weight:700;font-size:0.75rem;letter-spacing:0.08em;text-transform:uppercase;line-height:calc(var(--line) - 2px);padding:0 0.6rem;border:1px solid var(--ink);border-radius:0;background:var(--paper);color:var(--ink);cursor:pointer;}.ds-btn-quiet:hover{background:var(--ruled);}.ds-btn-quiet:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}"
+    },
+    {
+      "name": "Masthead",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "Brand, the two places to go, and who is reading, over a green double rule.",
+      "html": "<header class=\"ds-mast\"><a class=\"ds-brand\" href=\"#\">Threshold</a><nav class=\"ds-nav\"><a href=\"#\" aria-current=\"page\">Queue</a><a href=\"#\">Books</a></nav><span class=\"ds-reader\">Reading as <b>buyer</b> · Buyer</span></header>",
+      "css": ":host{--paper:#f4f7f2;--band:#e3eedf;--ruled:#d3e4cd;--form:#3b6843;--rule:#a8c5a2;--ink:#1a1f1b;--ink-soft:#465049;--red:#ae2219;--line:1.375rem;--sans:Archivo,'Arial Narrow',system-ui,sans-serif;--mono:'Martian Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;}.ds-mast{display:flex;align-items:baseline;gap:0 1.75rem;padding:0 1.5rem;line-height:calc(var(--line) * 2);background:var(--paper);border-bottom:3px double var(--form);font-family:var(--sans);font-size:0.9375rem;}.ds-brand{font-stretch:75%;font-weight:800;font-size:1.0625rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--form);text-decoration:none;}.ds-nav{display:flex;gap:1.25rem;}.ds-nav a{font-stretch:75%;font-weight:700;font-size:0.8125rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--form);text-decoration:none;padding-bottom:0.2rem;border-bottom:2px solid transparent;}.ds-nav a:hover{border-bottom-color:var(--rule);}.ds-nav a[aria-current=page]{color:var(--ink);border-bottom-color:var(--ink);}.ds-nav a:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}.ds-reader{margin-left:auto;color:var(--ink-soft);}.ds-reader b{font-family:var(--mono);font-stretch:87.5%;font-size:0.8125rem;color:var(--ink);}"
+    },
+    {
+      "name": "Report Table",
+      "kind": "custom",
+      "refersTo": "table-row-band",
+      "description": "Green column titles, banded rows at printer pitch, reading ruler on hover or focus, mono figures, red only for stops.",
+      "html": "<table class=\"ds-table\"><thead><tr><th>Status</th><th>Vendor</th><th class=\"n\">Amount</th><th>Why it stopped</th></tr></thead><tbody><tr><td class=\"st r\">Blocked</td><td><a href=\"#\">Northgate Supply</a></td><td class=\"n\">899.64<span class=\"u\">EUR</span></td><td>Billed above the agreed price</td></tr><tr><td class=\"st\">Review</td><td><a href=\"#\">Halcyon Facilities</a></td><td class=\"n\">1,740.00<span class=\"u\">GBP</span></td><td>Nothing recorded as received</td></tr><tr><td class=\"st\">Review</td><td><a href=\"#\">Northgate Supply</a></td><td class=\"n\">299.88<span class=\"u\">EUR</span></td><td>Nothing recorded as received</td></tr></tbody></table>",
+      "css": ":host{--paper:#f4f7f2;--band:#e3eedf;--ruled:#d3e4cd;--form:#3b6843;--rule:#a8c5a2;--ink:#1a1f1b;--ink-soft:#465049;--red:#ae2219;--line:1.375rem;--sans:Archivo,'Arial Narrow',system-ui,sans-serif;--mono:'Martian Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;}.ds-table{width:100%;border-collapse:collapse;font-family:var(--sans);font-size:0.9375rem;line-height:var(--line);color:var(--ink);background:var(--paper);}.ds-table th{font-stretch:75%;font-weight:700;font-size:0.75rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--form);text-align:left;padding:0 0.75rem calc(var(--line) / 4);border-bottom:1px solid var(--form);}.ds-table td{padding:calc(var(--line) / 2) 0.75rem;vertical-align:top;}.ds-table .n{text-align:right;white-space:nowrap;}.ds-table td.n{font-family:var(--mono);font-stretch:87.5%;font-size:0.8125rem;font-variant-numeric:tabular-nums slashed-zero;}.ds-table .u{color:var(--ink-soft);font-size:0.75em;margin-left:0.35em;}.ds-table .st{font-family:var(--mono);font-stretch:87.5%;font-size:0.75rem;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;}.ds-table .r{color:var(--red);}.ds-table a{color:inherit;font-weight:600;text-decoration-color:var(--form);text-underline-offset:0.22em;}.ds-table tbody tr{transition:background-color 150ms cubic-bezier(0.16,1,0.3,1),box-shadow 150ms cubic-bezier(0.16,1,0.3,1);}.ds-table tbody tr:nth-child(even){background:var(--band);}.ds-table tbody tr:hover,.ds-table tbody tr:focus-within{background:var(--ruled);box-shadow:inset 0 -2px 0 var(--ink);}.ds-table a:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}@media (prefers-reduced-motion: reduce){.ds-table tbody tr{transition:none;}}"
+    },
+    {
+      "name": "Ruled Reason Field",
+      "kind": "input",
+      "refersTo": "textarea-ruled",
+      "description": "A writing area with ruled lines at the printer pitch, not a box.",
+      "html": "<label class=\"ds-lbl\" for=\"ds-why\">Why</label><textarea id=\"ds-why\" class=\"ds-why\" placeholder=\"For example: called the vendor on the number we hold on file.\"></textarea>",
+      "css": ":host{--paper:#f4f7f2;--band:#e3eedf;--ruled:#d3e4cd;--form:#3b6843;--rule:#a8c5a2;--ink:#1a1f1b;--ink-soft:#465049;--red:#ae2219;--line:1.375rem;--sans:Archivo,'Arial Narrow',system-ui,sans-serif;--mono:'Martian Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;}.ds-lbl{display:block;font-family:var(--sans);font-stretch:75%;font-weight:700;font-size:0.8125rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--form);margin-bottom:calc(var(--line) / 2);}.ds-why{display:block;width:100%;min-height:calc(var(--line) * 5);resize:vertical;font-family:var(--sans);font-size:0.9375rem;line-height:var(--line);color:var(--ink);caret-color:var(--red);padding:0 0.25rem;border:0;border-top:1px solid var(--form);border-radius:0;background:repeating-linear-gradient(to bottom,transparent 0,transparent calc(var(--line) - 1px),var(--rule) calc(var(--line) - 1px),var(--rule) var(--line)) var(--paper);background-attachment:local;}.ds-why::placeholder{color:var(--ink-soft);font-style:italic;opacity:1;}.ds-why:focus-visible{outline:2px solid var(--ink);outline-offset:4px;}"
+    },
+    {
+      "name": "Decision Choice",
+      "kind": "input",
+      "description": "Square boxes to tick, the consequence printed under each label; none pre-ticked.",
+      "html": "<label class=\"ds-choice\"><input type=\"radio\" name=\"ds-d\"><span>Approve for payment<small>Releases it to the payment rail.</small></span></label><label class=\"ds-choice\"><input type=\"radio\" name=\"ds-d\"><span>Hold<small>Parked, not final: it can still be approved or rejected.</small></span></label>",
+      "css": ":host{--paper:#f4f7f2;--band:#e3eedf;--ruled:#d3e4cd;--form:#3b6843;--rule:#a8c5a2;--ink:#1a1f1b;--ink-soft:#465049;--red:#ae2219;--line:1.375rem;--sans:Archivo,'Arial Narrow',system-ui,sans-serif;--mono:'Martian Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;}.ds-choice{display:grid;grid-template-columns:auto minmax(0,1fr);gap:0 0.75rem;align-items:start;padding:calc(var(--line) / 4) 0;cursor:pointer;font-family:var(--sans);font-size:0.9375rem;line-height:var(--line);color:var(--ink);}.ds-choice input{appearance:none;width:1.125rem;height:1.125rem;margin:0.125rem 0 0;border:1.5px solid var(--form);border-radius:0;background:var(--paper);display:grid;place-content:center;cursor:pointer;}.ds-choice input::before{content:'';width:0.625rem;height:0.625rem;background:var(--ink);transform:scale(0);}.ds-choice input:checked{border-color:var(--ink);}.ds-choice input:checked::before{transform:scale(1);}.ds-choice input:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}.ds-choice span{font-weight:600;}.ds-choice small{display:block;font-size:0.8125rem;font-weight:400;color:var(--ink-soft);}"
+    },
+    {
+      "name": "Payment Stations",
+      "kind": "custom",
+      "refersTo": "station-current",
+      "description": "Payment stages in order; the current one printed in ink over a band.",
+      "html": "<ol class=\"ds-st\"><li>Pending</li><li>Submitting</li><li aria-current=\"step\">Submitted</li><li>Settled</li></ol>",
+      "css": ":host{--paper:#f4f7f2;--band:#e3eedf;--ruled:#d3e4cd;--form:#3b6843;--rule:#a8c5a2;--ink:#1a1f1b;--ink-soft:#465049;--red:#ae2219;--line:1.375rem;--sans:Archivo,'Arial Narrow',system-ui,sans-serif;--mono:'Martian Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;}.ds-st{list-style:none;display:flex;flex-wrap:wrap;margin:0;padding:0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);font-family:var(--sans);font-size:0.9375rem;line-height:var(--line);}.ds-st li{flex:1 1 8rem;padding:calc(var(--line) / 2) 0.75rem;color:var(--ink-soft);border-right:1px solid var(--rule);}.ds-st li:last-child{border-right:0;}.ds-st li[aria-current=step]{color:var(--ink);background:var(--band);box-shadow:inset 0 -2px 0 var(--ink);font-weight:600;}"
+    },
+    {
+      "name": "Accountant's Total",
+      "kind": "custom",
+      "description": "The one final figure, in mono, over a double rule.",
+      "html": "<span class=\"ds-total\">899.64<span class=\"ds-u\">EUR</span></span>",
+      "css": ":host{--paper:#f4f7f2;--band:#e3eedf;--ruled:#d3e4cd;--form:#3b6843;--rule:#a8c5a2;--ink:#1a1f1b;--ink-soft:#465049;--red:#ae2219;--line:1.375rem;--sans:Archivo,'Arial Narrow',system-ui,sans-serif;--mono:'Martian Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;}.ds-total{display:inline-block;font-family:var(--mono);font-stretch:87.5%;font-size:1.75rem;font-weight:500;font-variant-numeric:tabular-nums slashed-zero;line-height:1.2;padding-bottom:0.15rem;border-bottom:3px double var(--ink);color:var(--ink);white-space:nowrap;}.ds-u{color:var(--ink-soft);font-size:0.875rem;margin-left:0.35em;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Green-bar Report",
+    "overview": "Every screen is the morning's exception run, printed on continuous-form line-printer stationery. The metaphor is kept only where it does a job. The bands on alternate rows are there for the reason they were always there: they hold the eye on one row across a wide table. The two inks are provenance. Green is the form, preprinted before any invoice existed: headings, column titles, instructions. Black is what the system printed onto it: vendors, figures, reasons. A second, red ribbon prints only what stopped. Anything else from the paper (tractor holes, tear-off stubs) did no work here and is not here.\n\nThe page is dense on purpose and flat on purpose. There are no containers: structure comes from rules printed on the paper (hairline, dashed perforation, accountant's double) and from the printer-line module every vertical measure is cut from. Headings are condensed and green; figures are condensed mono, tabular, right-aligned. It should read as a tool that runs a finance team's week, not a demo of one.\n\nMotion is one moment: hovering or tabbing through a table lays a reading ruler under the row you are on, the way these printouts were read with a ruler under the line. Dark mode is the same report under a dim lamp: the paper goes near-black green, the form ink lightens, the ribbon stays red.",
+    "keyCharacteristics": [
+      "Two inks by provenance: green for the form, black for the print, red only for stops.",
+      "Pale green bands on alternate table rows; a darker ruled band plus a 2px ink underline for the row being read.",
+      "Printer-line vertical module (1.375rem) and its halves and quarters.",
+      "Square corners, rules instead of boxes, no drop shadows.",
+      "Condensed grotesque for the form's voice, condensed mono with tabular, slashed-zero numerals for everything printed."
+    ],
+    "rules": [
+      {
+        "name": "The Two Inks Rule",
+        "body": "Green is what was on the form before the invoice arrived; black is what the system printed onto it. If a string came from the data, it is black. If it explains the page, it is green.",
+        "section": "colors"
+      },
+      {
+        "name": "The Red Ribbon Rule",
+        "body": "Red prints only what stopped (blocked, over, failed, refused), and always beside words that say the same thing. A refusal that is the system working (\"not yours\", \"already decided\") is printed in the form's ink, never red.",
+        "section": "colors"
+      },
+      {
+        "name": "The Column Title Rule",
+        "body": "Column titles are the form's, even over a column of figures: condensed, green, uppercase, right-aligned over numbers but never set in the mono.",
+        "section": "typography"
+      },
+      {
+        "name": "The No Bare Number Rule",
+        "body": "A figure is never printed without its column title or unit. When tables stack on narrow screens, each cell prints its column title beside it.",
+        "section": "typography"
+      },
+      {
+        "name": "The Rules Not Boxes Rule",
+        "body": "Group with a printed rule, never with a container. Hairline (1px) separates records, dashed (1px) marks a new page of the run, double (3px) opens a major section or closes a total.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Reading Ruler Rule",
+        "body": "The one motion: on hover or focus-within, a table row takes the Ruled Band fill and a 2px Print Black underline (`inset 0 -2px 0`), over 150ms on `cubic-bezier(0.16, 1, 0.3, 1)`. It is removed under reduced motion. Nothing else animates for effect.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** cut every vertical measure from the printer line (1.375rem), its half or its quarter.",
+      "**Do** print every figure in the mono with tabular, slashed-zero numerals, right-aligned, with its unit in Faded Print.",
+      "**Do** put the accountant's double rule (3px double, Print Black) under a final figure, and only there among figures.",
+      "**Do** pair every red element with words that say the same thing; status is never carried by colour alone.",
+      "**Do** keep one active edge: a 2px Print Black outline at 2px offset on every focusable element, never removed.",
+      "**Do** mark the current item (nav page, payment station, reading row) with ink and a 2px ink underline."
+    ],
+    "donts": [
+      "**Don't** use cards, rounded corners, drop shadows, sidebars, KPI tiles or status pills. The inset 2px underline is a printed rule and is the only shadow value allowed.",
+      "**Don't** print a refusal that is the system working (\"not yours to decide\", \"already decided\") in red.",
+      "**Don't** set a small label above a title; the title says what the page is.",
+      "**Don't** set column titles in the mono, even over figures.",
+      "**Don't** add motion beyond the reading ruler.",
+      "**Don't** make the agent's escalation look authoritative: no fill, no emphasis colour, no border heavier than the dashed perforation."
+    ]
+  }
+}

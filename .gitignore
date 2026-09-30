@@ -25,3 +25,8 @@ infra/aws/.terraform/
 *.tfstate.backup
 *.tfvars
 !*.tfvars.example
+
+# Impeccable: review captures and per-machine config stay local.
+.impeccable/review/
+.impeccable/config.local.json
+.impeccable/questions/

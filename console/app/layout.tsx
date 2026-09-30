@@ -1,42 +1,44 @@
 import type { Metadata } from "next";
+import { Archivo, Martian_Mono } from "next/font/google";
 
-import { readSession } from "@/lib/session";
 import "./globals.css";
+
+/*
+ * Two faces, because the page has two voices. Archivo is the form: headings,
+ * column titles and instructions, set condensed the way preprinted business
+ * stationery was. Martian Mono is the printer: every figure, date and code the
+ * system wrote, with tabular numerals so a column of amounts lines up by
+ * digit. Both self-hosted at build time; no request leaves for a font CDN.
+ */
+const form = Archivo({
+  subsets: ["latin"],
+  axes: ["wdth"],
+  style: ["normal", "italic"],
+  variable: "--font-form",
+  display: "swap",
+});
+
+const print = Martian_Mono({
+  subsets: ["latin"],
+  axes: ["wdth"],
+  variable: "--font-print",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "Threshold — operator console",
   description: "Invoices the system would not clear on its own.",
 };
 
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const session = await readSession();
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className={`${form.variable} ${print.variable}`}>
       <body>
-        {/* Keyboard users reach the queue without tabbing the header first. */}
+        {/* Keyboard users reach the work without tabbing the masthead first. */}
         <a className="skip" href="#main">
           Skip to content
         </a>
-        <header className="bar">
-          <h1>Threshold</h1>
-          <a href="/queue">Queue</a>
-          <a href="/ledger">Books</a>
-          {session ? (
-            <span className="who">
-              {session.username} · {session.roles.join(", ") || "no roles"}
-              <form action="/api/auth/logout" method="post" style={{ display: "inline" }}>
-                <button type="submit" style={{ marginLeft: "0.75rem", padding: "0.2rem 0.6rem" }}>
-                  Sign out
-                </button>
-              </form>
-            </span>
-          ) : (
-            <span className="who">
-              <a href="/api/auth/login">Sign in</a>
-            </span>
-          )}
-        </header>
-        <main id="main">{children}</main>
+        {children}
       </body>
     </html>
   );
