@@ -285,14 +285,56 @@ def _pair_lines(
 
 def _check_document_arithmetic(
     invoice: InvoiceFacts, policy: TolerancePolicy
-) -> list[MatchException]:
+) -> tuple[list[MatchException], list[str]]:
     """Does the invoice agree with itself?
 
     Runs whether or not a purchase order was found. An invoice whose parts do
     not add up is wrong on its own terms, and finding that out does not require
     knowing what was ordered.
+
+    Three links, and every one has to hold: each line's quantity times price
+    against its stated line total, the line totals against the subtotal, and
+    the subtotal plus tax against the total. The middle link was missing until
+    D-039. Price and quantity are checked on the lines, but the total is what
+    gets paid, so without it an invoice could bill an order exactly, line by
+    line, state a larger subtotal, and be paid the difference.
+
+    The sum is over the *stated* line totals, not quantity times price: a line
+    that disagrees with itself is LINE_TOTAL_MISMATCH's finding, and this one is
+    about whether the page's own figures add up. On real readings it fires most
+    often because the reader got only some of the lines, which is why the detail
+    says how many lines were read: a short read and a short supplier look the
+    same in the sums and very different to the clerk.
     """
     problems: list[MatchException] = []
+    skipped: list[str] = []
+
+    if invoice.lines:
+        itemised = sum((line.line_total for line in invoice.lines), ZERO).quantize(SCALE)
+        # Overcharge first, so that is the breach recorded when both would trip.
+        subtotal_breach = policy.total.breach(actual=invoice.subtotal, expected=itemised)
+        if subtotal_breach is None:
+            subtotal_breach = policy.total.breach(actual=itemised, expected=invoice.subtotal)
+        if subtotal_breach is not None:
+            read = (
+                f"the one line read comes to {itemised}"
+                if len(invoice.lines) == 1
+                else f"the {len(invoice.lines)} lines read add up to {itemised}"
+            )
+            problems.append(
+                _raise(
+                    ExceptionCode.SUBTOTAL_MISMATCH,
+                    f"{read}, but the invoice states a subtotal of {invoice.subtotal}",
+                    breach=subtotal_breach,
+                )
+            )
+    else:
+        # Without lines there is nothing to add up. Recorded rather than passed
+        # over, so skipped_checks says on its own which comparisons never ran.
+        skipped.append(
+            "subtotal against its lines: the extraction carried no line items, "
+            "so the subtotal was not checked against them"
+        )
 
     stated = (invoice.subtotal + invoice.tax_amount).quantize(SCALE)
     breach = policy.total.breach(actual=invoice.total, expected=stated)
@@ -324,7 +366,7 @@ def _check_document_arithmetic(
                 )
             )
 
-    return problems
+    return problems, skipped
 
 
 def _check_lines(
@@ -485,7 +527,9 @@ def three_way_match(
             )
         )
 
-    problems.extend(_check_document_arithmetic(invoice, policy))
+    arithmetic_problems, arithmetic_skipped = _check_document_arithmetic(invoice, policy)
+    problems.extend(arithmetic_problems)
+    skipped.extend(arithmetic_skipped)
 
     # --- can we match at all? ----------------------------------------------
 

@@ -131,6 +131,7 @@ Sends documents.
 |---|---|---|
 | Invoice above the agreed price | Three-way match against the PO, with a tolerance | `test_matching.py` |
 | Invoice for goods never received | Match against goods receipts | `test_matching.py` |
+| Lines that match the order, a subtotal that does not | The lines must add up to the subtotal and the subtotal plus tax to the total; `subtotal_mismatch` blocks and is the clerk's | `test_matching.py`, D-039 |
 | Same invoice twice, identical bytes | A unique index on the content hash | `document_content_sha256_key`, `services/ingest.py` |
 | Same invoice twice, re-rendered | Vendor name *as read* plus invoice number | `duplicate_suspected`, `services/matching.py` |
 | New bank details on the invoice | Compared against the vendor's history; `bank_details_changed` blocks and is treasury's | `services/matching.py`, `test_matching.py` |
@@ -173,6 +174,14 @@ nothing had been compared, and nothing read `skipped_checks`.
 A skipped check now raises `checks_incomplete` when it would otherwise have left
 the invoice auto-approved, so the default is a person. See
 `test_an_invoice_with_no_line_items_is_not_auto_approved`.
+
+The same shape survived one layer up. Until D-039 nothing compared the lines
+with the subtotal, so an invoice could bill an order exactly, line by line,
+state a larger subtotal with tax and total consistent with it, and auto-approve
+for the larger figure. The shared test fixture had carried a mismatch between
+its lines and its subtotal since M1 (306.80 stated against 662.40 itemised, the
+understating direction), which is why no test noticed; the console's line table
+showed it on its first day.
 
 ### B. A careless or malicious insider
 

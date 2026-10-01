@@ -217,6 +217,12 @@ account verification, and an invoice whose payment block the parser cannot read
 auto-approves with a recorded skip. Both are stated in D-016 rather than papered
 over.
 
+**The invoice is checked against itself, whether or not an order was found.**
+Its lines must add up to its subtotal, the subtotal plus tax to its total, and
+each line to its own quantity times price. The first of those was missing until
+D-039, and adding it closed a quieter gap as well: a line table the reader got
+only part of used to be matched on the part it got.
+
 **A check that did not run is recorded, not omitted.** Cross-currency prices are
 not compared at all — 100 EUR against 100 USD yields a variance of zero, which
 is not a match but a category error — and an extraction carrying no line items

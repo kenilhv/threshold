@@ -31,6 +31,7 @@ The ones that arrive in bulk:
 | `currency_mismatch` | A supplier began billing in a different currency |
 | `receipt_missing` | The goods receipt feed is behind |
 | `duplicate_suspected` | A batch was submitted twice |
+| `subtotal_mismatch` | A layout whose line table is now read only in part (the detail says how many lines were read), or a supplier who began printing freight or a discount outside the lines |
 | `bank_details_changed` | **Stop.** See below. |
 
 ## If the code is `bank_details_changed`

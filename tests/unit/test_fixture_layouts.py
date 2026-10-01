@@ -27,11 +27,14 @@ LAYOUTS = [
 ]
 
 
+TAX_RATE = Decimal("0.1900")
+
+
 def build_spec(
     *,
     line_item_count: int = 3,
     currency: str = "EUR",
-    total: Decimal = Decimal("365.0920"),
+    credit: bool = False,
     seed: int = 4471,
 ) -> InvoiceSpec:
     items = tuple(
@@ -45,6 +48,16 @@ def build_spec(
         )
         for i in range(line_item_count)
     )
+    # Derived from the lines, never stated beside them. Until D-039 this read
+    # subtotal 306.80, tax 58.292, total 365.092 against three lines worth
+    # 662.40 -- a fixture that disagreed with itself since M1, which the
+    # matcher could not see because it never added the lines up. The lines are
+    # what PO-44718 is seeded with (test_seed_coupling.py), so the totals moved
+    # and the lines did not. Tax is rounded to the cent, as evals/corpus.py
+    # does: the spec is the answer key, and the page can only print cents.
+    subtotal = sum((item.line_total for item in items), Decimal("0.0000"))
+    tax_amount = (subtotal * TAX_RATE).quantize(Decimal("0.01"))
+    total = subtotal + tax_amount
     return InvoiceSpec(
         invoice_number="INV-2026-0918",
         vendor_name="Northgate Supply",
@@ -55,10 +68,12 @@ def build_spec(
         due_date=date(2026, 8, 13),
         currency=currency,
         line_items=items,
-        subtotal=Decimal("306.8000"),
-        tax_rate=Decimal("0.1900"),
-        tax_amount=Decimal("58.2920"),
-        total=total,
+        subtotal=subtotal,
+        tax_rate=TAX_RATE,
+        tax_amount=tax_amount,
+        # A credit note negates the total only, as evals/corpus.py does: its
+        # lines and subtotal are still the positive amounts being credited.
+        total=-total if credit else total,
         payment_terms="Net 30 days from invoice date",
         # Coupled to the seed, the same way po_number is: these are the last
         # four digits of Northgate's CURRENTLY EFFECTIVE bank row in
@@ -162,7 +177,7 @@ class TestMultipageAndCreditNote:
         assert "total due" not in first_page and "amount due" not in first_page
 
     def test_negative_total_renders_as_a_credit_note(self, tmp_path: Path) -> None:
-        spec = build_spec(total=Decimal("-365.0920"))
+        spec = build_spec(credit=True)
         assert spec.is_credit_note
         path = tmp_path / "credit.pdf"
         render("multipage_credit", spec, path)
@@ -180,3 +195,26 @@ class TestLayoutsDifferFromEachOther:
             for layout in LAYOUTS
         }
         assert len(set(digests.values())) == len(LAYOUTS), "two layouts produced identical bytes"
+
+
+class TestTheFixtureAgreesWithItself:
+    """The shared fixture is the answer key for every scenario built on it.
+
+    It carried 662.40 of lines against a 306.80 subtotal from M1 until D-039,
+    and nothing noticed, because nothing checked: the matcher did not add the
+    lines up, and no test asked the fixture whether it did. This asks.
+    """
+
+    @pytest.mark.parametrize("count", [1, 3, 40])
+    def test_its_lines_subtotal_tax_and_total_reconcile(self, count: int) -> None:
+        spec = build_spec(line_item_count=count)
+        for item in spec.line_items:
+            assert item.quantity * item.unit_price == item.line_total
+        assert sum((i.line_total for i in spec.line_items), Decimal("0")) == spec.subtotal
+        assert spec.subtotal + spec.tax_amount == spec.total
+        assert spec.tax_amount == (spec.subtotal * spec.tax_rate).quantize(Decimal("0.01"))
+
+    def test_a_credit_note_is_the_same_document_negated(self) -> None:
+        credit, invoice = build_spec(credit=True), build_spec()
+        assert credit.total == -invoice.total
+        assert credit.subtotal == invoice.subtotal

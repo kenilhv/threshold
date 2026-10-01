@@ -31,6 +31,7 @@ FROZEN_CODES = {
     "under_billed",
     "arithmetic_mismatch",
     "line_total_mismatch",
+    "subtotal_mismatch",
     "low_confidence_field",
     "checks_incomplete",
     "bank_details_changed",

@@ -100,6 +100,10 @@ class ExceptionCode(StrEnum):
     # --- the document does not agree with itself ---------------------------
     ARITHMETIC_MISMATCH = "arithmetic_mismatch"
     LINE_TOTAL_MISMATCH = "line_total_mismatch"
+    #: The lines do not add up to the subtotal. Added rather than folded into
+    #: ARITHMETIC_MISMATCH, whose stored rows have always meant "subtotal plus
+    #: tax against the total" and whose summary is quoted to reviewers (D-039).
+    SUBTOTAL_MISMATCH = "subtotal_mismatch"
 
     # --- we are not confident enough to act --------------------------------
     LOW_CONFIDENCE_FIELD = "low_confidence_field"
@@ -242,6 +246,18 @@ TAXONOMY: Final[dict[ExceptionCode, ExceptionSpec]] = {
         owner=OwnerRole.AP_CLERK,
         sla_hours=24,
         summary="Quantity times unit price does not equal the stated line total.",
+    ),
+    ExceptionCode.SUBTOTAL_MISMATCH: ExceptionSpec(
+        code=ExceptionCode.SUBTOTAL_MISMATCH,
+        # BLOCK, like its sibling ARITHMETIC_MISMATCH. Price and quantity are
+        # checked on the lines; what gets paid is the total. This is the link
+        # between the two, and when it breaks, the amount paid is not the
+        # amount that was checked.
+        severity=Severity.BLOCK,
+        owner=OwnerRole.AP_CLERK,
+        sla_hours=24,
+        summary="The line totals do not add up to the stated subtotal.",
+        sap_lineage="BD",
     ),
     ExceptionCode.LOW_CONFIDENCE_FIELD: ExceptionSpec(
         code=ExceptionCode.LOW_CONFIDENCE_FIELD,

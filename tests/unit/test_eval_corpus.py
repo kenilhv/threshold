@@ -98,6 +98,15 @@ class TestTheTruthIsPrintable:
             magnitude = abs(spec.total)
             assert magnitude == spec.subtotal + spec.tax_amount, document.name
 
+    def test_the_lines_add_up_to_the_subtotal(self) -> None:
+        """The matcher checks this since D-039, so a corpus that broke it would
+        describe documents the system blocks. Held by construction in
+        `evals/corpus.py`; asserted here so the construction cannot drift."""
+        for document in generate(120, seed=17):
+            spec = document.spec
+            itemised = sum((i.line_total for i in spec.line_items), Decimal("0.00"))
+            assert itemised == spec.subtotal, document.name
+
     def test_the_check_can_fail(self) -> None:
         """A guard for the guard: four decimals must be detectable as such."""
         assert Decimal("244615.0647") != Decimal("244615.0647").quantize(CENTS)

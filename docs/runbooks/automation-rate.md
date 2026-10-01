@@ -29,12 +29,19 @@ sum by (code) (rate(threshold_match_exceptions_total[1h]))
 Grafana → **Exceptions by owner**, then group by `code`. The shape of the answer
 tells you the cause.
 
-## The four usual causes
+## The five usual causes
 
 **A tolerance policy changed.** Check the `policy_version` label on
 `threshold_match_decisions_total`: if the rate fell at the moment a new version
 appeared, the policy is the cause. Compare against `docs/DECISIONS.md` — D-014
 records that tolerances are versioned precisely so this question has an answer.
+
+**A control was added.** A new check can lower the rate without a new
+`policy_version`, because the version names thresholds, not rules. If the rate
+fell at a release rather than at a policy change, look in `docs/DECISIONS.md`
+for a check added then. D-039 is the latest: it blocks an invoice whose line
+table was read only in part, which used to be matched on the lines that were
+read.
 
 **The vendor master stopped resolving.** A spike in `vendor_unknown` means
 invoices no longer match a supplier row. Usually a failed or partial vendor

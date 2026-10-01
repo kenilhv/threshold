@@ -158,6 +158,9 @@ def halcyon_service_visit() -> InvoiceSpec:
             total=Decimal("1740.0000"),
         ),
         currency="GBP",
+        # UK VAT. The base spec prints 19%, and 290.00 is 20% of 1450.00, so
+        # until D-039 this page printed a rate its own tax disagreed with.
+        tax_rate=Decimal("0.2000"),
     )
 
 

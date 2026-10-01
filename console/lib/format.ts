@@ -85,6 +85,7 @@ const EXCEPTIONS: Record<string, string> = {
   under_billed: "Billed for less than arrived",
   arithmetic_mismatch: "Totals do not add up",
   line_total_mismatch: "A line total does not add up",
+  subtotal_mismatch: "Lines do not add up to the subtotal",
   low_confidence_field: "A field could not be read with confidence",
   checks_incomplete: "A check did not run",
   bank_details_changed: "Pay-to account has changed",

@@ -841,8 +841,11 @@ class MatchResult(Base):
     that can be diffed against the one before it.
 
     ``extraction_id`` and ``policy_version`` together are what make the
-    conclusion reproducible: the same reading, judged under the same thresholds,
-    must produce the same disposition.
+    conclusion reproducible: the same reading, judged under the same thresholds
+    and the same rules, must produce the same disposition. The thresholds are
+    versioned here; a rule is versioned by the decision record that added it
+    (D-039 is the latest), so a row from before a new check can judge
+    differently after it under the same ``policy_version``.
     """
 
     __tablename__ = "match_result"

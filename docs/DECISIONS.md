@@ -5,6 +5,108 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-039 — The lines have to add up to the subtotal
+
+**Date:** 2026-10-01 · **Status:** accepted
+
+D-038 found it on the line table's first day. `_check_document_arithmetic`
+compared subtotal plus tax with the total, and each line with its own quantity
+and price, but never the lines with the subtotal. Price and quantity are checked
+on the lines; what gets paid is the stated total. So an invoice could bill an
+order exactly, line by line, state a larger subtotal with tax and total
+consistent with it, and auto-approve for the larger figure. Reproduced against
+the real matcher before anything changed, in both directions. Lines matching the
+order under a subtotal stated above them auto-approved. So did the shared
+fixture's own numbers, which ran the other way: 662.40 itemised over a stated
+subtotal of 306.80, an invoice that would have paid less than it listed —
+`auto_approve`, no exceptions, nothing skipped. Either direction is the same
+missing link.
+
+**The check.** The stated line totals are summed and compared with the stated
+subtotal, in both directions, under the `total` tolerance the rest of the
+document arithmetic already uses. It sums the *stated* line totals, not quantity
+times price: a line that disagrees with itself is `line_total_mismatch`'s
+finding, and this one is about whether the page's own figures add up. An
+invoice with no lines read is not compared — against nothing, the absolute cap
+alone would block every unreadable line table — and the skip is recorded in
+`skipped_checks`, so the record says on its own which comparison never ran.
+
+**A new code, not a reused one.** A breach raises `subtotal_mismatch`: BLOCK,
+the AP clerk's, 24 hours. Folding it into `arithmetic_mismatch` would have been
+shorter and wrong. The taxonomy is add-never-repurpose, every stored
+`arithmetic_mismatch` row means "subtotal plus tax against the total", and that
+summary is quoted to reviewers word for word by the triage tier. BLOCK because
+this is the link between the lines that were checked and the total that is
+paid; when it breaks, the amount paid is not the amount checked. Both
+arithmetic codes belong to the AP clerk, so an invoice raising both can still be
+decided by one desk.
+
+**What it catches that was not the target.** A line table read only in part.
+On the evaluation corpus (400 documents, the real extractor, the shipped check)
+the comparison fires on 90: 51 thermal, 32 multipage, 7 continental. 84 of those
+are partial line reads with the subtotal read correctly; the other 6 are
+multipage partial reads with the subtotal misread too. 89 of the 90 were already
+blocked by `arithmetic_mismatch`. The exception is one continental document the
+confidence gate accepts, with 24 of its 40 lines read; it now blocks, but it was
+already held for review, because its purchase-order number was not read. So on
+this corpus the check moves one disposition from review to block and changes no
+auto-approval: 34 before and 34 after. Where it will move the automation rate is
+on partial reads whose order number *is* read, which used to be matched on the
+lines that were read. The corpus holds none, so that effect is expected, not
+measured. It is why the detail says how many lines were read — "the 2 lines read
+add up to 100.0000, but the invoice states a subtotal of 150.00". A short read and
+a short supplier add up the same and mean different things to the clerk.
+
+**The fixture is derived, not stated.** `build_spec` now computes its subtotal,
+tax and total from its lines: 662.40, 125.86 and 788.26. The lines did not move,
+because PO-44718 is seeded with them (`test_seed_coupling.py`); the totals did.
+Tax is rounded to the cent, as `evals/corpus.py` does, because the spec is the
+answer key and a page can only print cents. The free `total` parameter, the one
+way left to build a fixture that disagrees with itself, is replaced by a
+`credit` flag that negates the total only. `TestTheFixtureAgreesWithItself` asks
+the question nothing asked from M1 until now, and the corpus has the same guard.
+Every demo invoice now reconciles; Halcyon's, which printed a 19% rate beside
+20% of tax, prints 20%.
+
+**The policy version did not move.** It stays 2026.09.2, as it did when
+`checks_incomplete` was added: the version names thresholds, and no threshold
+changed. The cost is stated rather than hidden — a match result stamped
+2026.09.2 before this change can judge differently under 2026.09.2 after it.
+Rules are versioned by this record, not by the policy string.
+
+**Correction to D-038.** It said the evaluation suite builds on `build_spec`. It
+does not: `evals/corpus.py` makes its own specs, sums each subtotal from its
+lines, and never runs the matcher, so `evals/baseline.txt` does not move.
+
+**Evidence.** Six mutations of the new check, each killed by
+`tests/unit/test_matching.py`: dropping either direction, deleting the finding,
+summing quantity times price instead of stated line totals, removing the
+no-lines guard, and not recording the skip. An adversarial review then found two
+of the tests weaker than they read; after tightening, three more mutations are
+killed as well: the price tolerance swapped in for the document one, the 0.005
+floor ignored, and the existing "no line items" skip dropped, which the new skip
+had been masking.
+
+**Still open.**
+
+- Tax is not checked. Lines can equal the subtotal while an inflated tax keeps
+  subtotal plus tax equal to the total; there is no tax-rate control.
+- Per-line tolerance adds up. Three lines each overstated by less than 0.5% and
+  less than 25.00 pass `line_total_mismatch` one at a time, and their stated
+  totals then add up exactly, so a sum of stated totals cannot see it. Comparing
+  the sum of quantity times price as well would, at the cost of citing a figure
+  the page never prints.
+- The tolerance absorbs up to the smaller of 25.00 and 0.5% of un-itemised
+  charge: the same exposure already accepted on the subtotal-plus-tax link. Each
+  link absorbs its own allowance and the allowances stack: on 10,000.00 of
+  lines, a subtotal 24.99 above them and a total 24.99 above that pass together,
+  49.98 in all, where either amount put into one link would block.
+- Found during this work and not caused by it: the rules triage tier refuses
+  its own escalation when the lead desk holds one code on several lines, because
+  it cites each row's code without removing repeats. Queued separately.
+
+---
+
 ## D-038 — The invoice screen shows the evidence, and the console is printed like the run it replaces
 
 **Date:** 2026-09-30 · **Status:** accepted
@@ -61,7 +163,8 @@ amount and charge another. The test fixture (`build_spec`) has carried the
 mismatch since M1, which is why no test noticed. It is recorded here and not
 fixed in this increment: the fix changes the fixture that the unit, integration
 and evaluation suites all build on, and it gets its own decision (D-039) rather
-than riding along with a redesign.
+than riding along with a redesign. Fixed in D-039, which also corrects one claim
+here: the evaluation corpus generates its own specs and never used `build_spec`.
 
 ---
 

@@ -345,10 +345,31 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="quantity times price does not equal the stated line total",
-        invoice=invoice(lines=(inv_line(line_total="99.00"),)),
+        # The subtotal follows the *stated* line total, so the lines add up and
+        # only the line's own arithmetic is wrong. This also pins that the
+        # lines-against-subtotal check sums stated line totals: summing
+        # quantity times price would fire here as well.
+        invoice=invoice(lines=(inv_line(line_total="99.00"),), subtotal="99.00", total="104.00"),
         po=order(),
         codes={ExceptionCode.LINE_TOTAL_MISMATCH},
         disposition=Disposition.NEEDS_REVIEW,
+    ),
+    Case(
+        name="the subtotal is more than the lines add up to",
+        # 50.00 itemised, 80.00 charged; subtotal plus tax still equals the
+        # total, so only the lines-against-subtotal link can catch it. This is
+        # the shape that paid out before D-039.
+        invoice=invoice(subtotal="80.00", total="85.00"),
+        po=order(),
+        codes={ExceptionCode.SUBTOTAL_MISMATCH},
+        disposition=Disposition.BLOCKED,
+    ),
+    Case(
+        name="the subtotal is less than the lines add up to",
+        invoice=invoice(subtotal="20.00", total="25.00"),
+        po=order(),
+        codes={ExceptionCode.SUBTOTAL_MISMATCH},
+        disposition=Disposition.BLOCKED,
     ),
     # --- confidence -------------------------------------------------------
     Case(
@@ -456,10 +477,15 @@ def test_the_policy_version_is_stamped_on_the_outcome() -> None:
 
 def test_line_pairs_are_recorded() -> None:
     outcome = three_way_match(
-        invoice(lines=(inv_line(number=1), inv_line(number=2, sku="SKU-2", description="Bracket"))),
+        invoice(
+            lines=(inv_line(number=1), inv_line(number=2, sku="SKU-2", description="Bracket")),
+            subtotal="100.00",
+            total="105.00",
+        ),
         order(lines=(po_line(number=1), po_line(number=2, sku="SKU-2", description="Bracket"))),
     )
     assert outcome.line_pairs == ((1, 1), (2, 2))
+    assert outcome.disposition is Disposition.AUTO_APPROVE, "the fixture agrees with itself"
 
 
 def test_an_invoice_with_no_line_items_is_not_auto_approved() -> None:
@@ -484,11 +510,15 @@ def test_an_invoice_with_no_line_items_is_not_auto_approved() -> None:
 
     assert outcome.disposition is Disposition.NEEDS_REVIEW
     assert [e.code for e in outcome.exceptions] == [ExceptionCode.CHECKS_INCOMPLETE]
-    assert outcome.skipped_checks
-    assert "no line items" in outcome.skipped_checks[0]
+    # Each comparison that did not run is named by its own sentence, asserted
+    # by its prefix rather than its position: since D-039 there are two, and a
+    # shared phrase would let either one vanish unnoticed.
+    assert any(s.startswith("price and quantity matching:") for s in outcome.skipped_checks)
+    assert any(s.startswith("subtotal against its lines:") for s in outcome.skipped_checks)
     # The reviewer is told what was not compared, not merely that something
-    # was not: the skip's own sentence is carried into the detail.
-    assert "no line items" in outcome.exceptions[0].detail
+    # was not: every skip's own sentence is carried into the detail.
+    for skipped in outcome.skipped_checks:
+        assert skipped in outcome.exceptions[0].detail
 
 
 def test_a_skipped_check_does_not_pile_on_when_something_else_already_fired() -> None:
@@ -598,3 +628,126 @@ class TestPaymentDetailComparison:
         codes = {e.code for e in outcome.exceptions}
         assert ExceptionCode.BANK_DETAILS_CHANGED in codes
         assert ExceptionCode.NO_PO_REFERENCE in codes
+
+
+class TestTheLinesHaveToAddUpToTheSubtotal:
+    """D-039: the link between the lines that were checked and the total that is paid.
+
+    Price and quantity are compared line by line; the payable amount is the
+    stated total. Until D-039 nothing tied the two together, so an invoice could
+    bill an order exactly, state a larger subtotal, keep subtotal plus tax equal
+    to the total, and auto-approve for the larger figure.
+    """
+
+    def test_the_shape_that_used_to_pay_out_is_blocked(self) -> None:
+        """The shared fixture's own numbers before D-039: three lines of
+        12 x 18.40 (662.40 itemised) against a stated subtotal of 306.80, with
+        tax and total consistent with the subtotal. It auto-approved."""
+        lines = tuple(
+            inv_line(number=n, sku=f"SKU-{n}", quantity="12", unit_price="18.4000")
+            for n in (1, 2, 3)
+        )
+        outcome = three_way_match(
+            invoice(lines=lines, subtotal="306.8000", tax_amount="58.2920", total="365.0920"),
+            order(
+                lines=tuple(
+                    po_line(
+                        number=n,
+                        sku=f"SKU-{n}",
+                        quantity_ordered="12",
+                        quantity_received="12",
+                        unit_price="18.4000",
+                    )
+                    for n in (1, 2, 3)
+                )
+            ),
+        )
+        assert [e.code for e in outcome.exceptions] == [ExceptionCode.SUBTOTAL_MISMATCH]
+        assert outcome.disposition is Disposition.BLOCKED
+
+    def test_the_breach_records_what_was_itemised_and_what_was_stated(self) -> None:
+        outcome = three_way_match(invoice(subtotal="80.00", total="85.00"), order())
+        (exception,) = outcome.exceptions
+        assert exception.breach is not None
+        assert exception.breach.expected == D("50.0000"), "what the lines add up to"
+        assert exception.breach.actual == D("80.00"), "what the invoice states"
+        assert exception.breach.variance == D("30.0000")
+        # Document-level: no single line is wrong, so it attaches to none.
+        assert exception.invoice_line_number is None
+        assert exception.owner is OwnerRole.AP_CLERK
+
+    def test_the_detail_says_how_many_lines_were_read_and_both_figures(self) -> None:
+        """Most real firings are a short read, not a short supplier. Saying how
+        many lines were read is what lets the clerk tell which."""
+        two = (inv_line(number=1), inv_line(number=2, sku="SKU-2", description="Bracket"))
+        outcome = three_way_match(invoice(lines=two, subtotal="150.00", total="155.00"), order())
+        detail = next(
+            e.detail for e in outcome.exceptions if e.code is ExceptionCode.SUBTOTAL_MISMATCH
+        )
+        assert "the 2 lines read add up to 100.0000" in detail
+        assert "states a subtotal of 150.00" in detail
+
+        single = three_way_match(invoice(subtotal="80.00", total="85.00"), order())
+        assert single.exceptions[0].detail.startswith("the one line read comes to 50.0000")
+
+    def test_a_partly_read_line_table_no_longer_passes_on_the_part_it_got(self) -> None:
+        """Two lines read out of a 75.00 subtotal. Before D-039 this matched on
+        the 50.00 it could see and auto-approved the 75.00 it could not."""
+        outcome = three_way_match(invoice(subtotal="75.00", total="80.00"), order())
+        assert {e.code for e in outcome.exceptions} == {ExceptionCode.SUBTOTAL_MISMATCH}
+        assert outcome.disposition is Disposition.BLOCKED
+
+    @pytest.mark.parametrize(
+        ("price", "subtotal", "fires", "by_percentage", "by_cap"),
+        [
+            # Under the 0.005 floor: immaterial, even at 0.8% over.
+            ("0.50", "0.504", False, False, False),
+            # 1.2% over and 0.60 in money: the percentage alone trips it.
+            ("50.00", "50.60", True, True, False),
+            # 0.25% over and 25.01 in money: the cap alone trips it.
+            ("10000.00", "10025.01", True, False, True),
+            # 0.2499% and 24.99: under both, so absorbed.
+            ("10000.00", "10024.99", False, False, False),
+        ],
+        ids=["floor", "percentage", "cap", "under-both"],
+    )
+    def test_it_uses_the_document_arithmetic_tolerance(
+        self, price: str, subtotal: str, fires: bool, by_percentage: bool, by_cap: bool
+    ) -> None:
+        """Rounding is not an overcharge. The bound is the `total` tolerance the
+        rest of the document arithmetic uses (0.005 floor, then 0.5% or 25.00),
+        and each case isolates one of its three instruments, so swapping in the
+        price tolerance (2% or 50.00) or dropping the floor fails one of them."""
+        outcome = three_way_match(
+            invoice(
+                lines=(inv_line(quantity="1", unit_price=price),),
+                subtotal=subtotal,
+                tax_amount="0",
+                total=subtotal,
+            ),
+            order(lines=(po_line(quantity_ordered="1", quantity_received="1", unit_price=price),)),
+        )
+        found = [e for e in outcome.exceptions if e.code is ExceptionCode.SUBTOTAL_MISMATCH]
+        if not fires:
+            assert not found
+            assert outcome.disposition is Disposition.AUTO_APPROVE
+            return
+        (exception,) = found
+        assert exception.breach is not None
+        assert exception.breach.tripped_percentage is by_percentage
+        assert exception.breach.tripped_cap is by_cap
+
+    def test_no_lines_means_the_comparison_is_recorded_as_not_run(self) -> None:
+        """Without lines there is nothing to add up, and a subtotal compared
+        against nothing would block every unreadable line table on the cap
+        alone. So it is skipped -- and the skip is said, not implied."""
+        outcome = three_way_match(invoice(lines=()), order())
+        assert ExceptionCode.SUBTOTAL_MISMATCH not in {e.code for e in outcome.exceptions}
+        assert any("subtotal against its lines" in s for s in outcome.skipped_checks)
+        assert outcome.disposition is Disposition.NEEDS_REVIEW
+
+    def test_it_runs_when_no_purchase_order_was_found(self) -> None:
+        """Document arithmetic does not need an order: an invoice that does not
+        add up is wrong on its own terms."""
+        outcome = three_way_match(invoice(subtotal="80.00", total="85.00", po_number=None), None)
+        assert ExceptionCode.SUBTOTAL_MISMATCH in {e.code for e in outcome.exceptions}

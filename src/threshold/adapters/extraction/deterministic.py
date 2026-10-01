@@ -458,7 +458,7 @@ def _find_labelled_amount(
                 # "zzgl. MwSt. 19,00 %" carries the rate on the label line and
                 # the amount on the next one. Read naively the rate wins, being
                 # on the same line and therefore more confident, and the invoice
-                # comes out with 19.00 of tax instead of 58.29. A percentage is
+                # comes out with 19.00 of tax instead of the amount printed. A percentage is
                 # never a money amount, whatever line it is on.
                 if _PERCENT_SUFFIX.match(target[match.end() :]):
                     continue

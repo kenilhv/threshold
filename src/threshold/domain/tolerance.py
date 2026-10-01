@@ -132,7 +132,9 @@ class TolerancePolicy:
     price: Tolerance
     #: Billed quantity against received quantity, in units rather than money.
     quantity: Tolerance
-    #: Document arithmetic -- subtotal plus tax against the stated total.
+    #: Document arithmetic -- each line against its own quantity times price,
+    #: the lines against the subtotal (D-039), and subtotal plus tax against the
+    #: stated total.
     total: Tolerance
     #: Below this, a field is not trustworthy enough to decide on. Compared
     #: against the *minimum* confidence across the fields a decision reads, never

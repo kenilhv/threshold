@@ -370,7 +370,15 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                 {/* Line-level findings are in the table below, with their
                     numbers. Anything about the document as a whole is said
                     here, in the matcher's words. */}
-                {lines.length === 0 && <p className="said">{first.detail}</p>}
+                {/* Every one, not the first: two document-level findings of
+                    one kind say different things, and the second sentence is
+                    as much evidence as the first. */}
+                {lines.length === 0 &&
+                  all.map((e, index) => (
+                    <p className="said" key={index}>
+                      {e.detail}
+                    </p>
+                  ))}
               </li>
             );
           })}

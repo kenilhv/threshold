@@ -256,9 +256,9 @@ console/        the operator console (Next.js, back-end for front-end)
 evals/          the extraction evaluation harness and its committed baseline
 migrations/     Alembic, every revision reversible and proved so in CI
 infra/local/    compose, the Keycloak realm, Prometheus rules, the Grafana dashboard
-docs/           ARCHITECTURE.md, DECISIONS.md (38 records), THREAT-MODEL.md, 7 runbooks
-tests/unit/     757 tests, no stack required
-tests/integration/  393 tests, requires `make up`
+docs/           ARCHITECTURE.md, DECISIONS.md (40 records), THREAT-MODEL.md, 7 runbooks
+tests/unit/     789 tests, no stack required
+tests/integration/  405 tests, requires `make up`
 ```
 
 The split that matters is `domain/` against everything else. A rule in `domain/`
