@@ -8,6 +8,7 @@ that nothing the supplier wrote reaches the sentence a reviewer reads.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import uuid
 
 import pytest
@@ -270,3 +271,77 @@ class TestTheTaxonomyStillSupportsTheseRules:
             and b.sla_hours < a.sla_hours
         ]
         assert pairs, "severity and deadline now agree everywhere; the ordering test is vacuous"
+
+
+class TestAControlRaisedOnSeveralLinesIsCitedOnce:
+    """D-040. `recorded` holds one row per exception, so a control that fired
+    on three lines arrives three times. The tier cited a code per row, the
+    packet refused the repeats, and the service logged the refusal and
+    recorded no escalation -- whenever the desk that leads held one control on
+    several lines and another desk was involved too. Every test above used
+    each code once, which is why none of them saw it."""
+
+    def test_a_price_variance_on_three_lines_still_escalates(self) -> None:
+        packet = triage(
+            ExceptionCode.PRICE_VARIANCE,
+            ExceptionCode.PRICE_VARIANCE,
+            ExceptionCode.PRICE_VARIANCE,
+            ExceptionCode.RECEIPT_MISSING,
+        )
+        assert packet is not None, "refused: a repeated code reached the packet"
+        assert packet.owner is OwnerRole.BUYER
+        assert packet.codes == (ExceptionCode.PRICE_VARIANCE,)
+
+    def test_the_shape_d039_makes_common(self) -> None:
+        """A misread line total raises `line_total_mismatch` on that line and
+        `subtotal_mismatch` on the document. Two such lines plus another
+        desk's finding is an ordinary partial read, and it now escalates once,
+        with each code named once in the summary too."""
+        packet = triage(
+            ExceptionCode.SUBTOTAL_MISMATCH,
+            ExceptionCode.LINE_TOTAL_MISMATCH,
+            ExceptionCode.LINE_TOTAL_MISMATCH,
+            ExceptionCode.PRICE_VARIANCE,
+        )
+        assert packet is not None
+        assert packet.owner is OwnerRole.AP_CLERK
+        assert packet.codes == (
+            ExceptionCode.SUBTOTAL_MISMATCH,
+            ExceptionCode.LINE_TOTAL_MISMATCH,
+        )
+        assert packet.summary.untrusted.count("line total mismatch") == 1
+
+    def test_the_answer_does_not_depend_on_the_order_the_repeats_arrive_in(self) -> None:
+        """`open_exceptions` has no ORDER BY. The fix sorts after removing
+        repeats; a dedupe that kept first-seen order instead would cite the
+        same codes in a different order, and write a different sentence, for
+        the same invoice. Every arrangement of these rows, interleaved repeats
+        included, has to give one answer."""
+        rows = (
+            ExceptionCode.PRICE_VARIANCE,
+            ExceptionCode.QUANTITY_VARIANCE,
+            ExceptionCode.PRICE_VARIANCE,
+            ExceptionCode.QUANTITY_VARIANCE,
+            ExceptionCode.RECEIPT_MISSING,
+        )
+        answers = set()
+        for arrangement in set(itertools.permutations(rows)):
+            packet = triage(*arrangement)
+            assert packet is not None, arrangement
+            answers.add((packet.owner, packet.codes, packet.summary.untrusted))
+        assert len(answers) == 1
+        ((owner, codes, _),) = answers
+        assert owner is OwnerRole.BUYER
+        assert codes == (ExceptionCode.PRICE_VARIANCE, ExceptionCode.QUANTITY_VARIANCE)
+
+    def test_no_pair_of_codes_on_two_desks_is_refused_when_repeated(self) -> None:
+        """Every code in the taxonomy, raised twice, beside every code from
+        another desk, also raised twice. The refusal was in the shape of the
+        input rather than in any one code, so the sweep is over shapes."""
+        for code in ExceptionCode:
+            for other in ExceptionCode:
+                if spec_for(other).owner is spec_for(code).owner:
+                    continue
+                packet = triage(code, code, other, other)
+                assert packet is not None, (code, other)
+                assert len(set(packet.codes)) == len(packet.codes), (code, other)

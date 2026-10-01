@@ -51,8 +51,10 @@ from threshold.domain.triage import (
 )
 
 #: Bumped when the ordering or the wording changes, because both change the
-#: output and a stored escalation has to say which version produced it.
-RULES_VERSION: Final = "rules-2026.09.2"
+#: output and a stored escalation has to say which version produced it. Bumped
+#: for D-040 too: neither changed, but this version produces packets the last
+#: one refused, so "reproducible from its version string" needs a new string.
+RULES_VERSION: Final = "rules-2026.10.1"
 
 _SEVERITY_ORDER: Final = {Severity.BLOCK: 0, Severity.REVIEW: 1, Severity.INFO: 2}
 
@@ -108,9 +110,16 @@ class RuleBasedTriager:
             return None
 
         lead = min(recorded, key=_urgency)
+        # One entry per code, not per row. `recorded` holds a row for every
+        # exception, so a price variance raised on three lines is three rows.
+        # Citing each row's code named the same control three times, which
+        # `EscalationPacket` refuses ("the same code twice says nothing
+        # twice"); the service logged the refusal and recorded nothing. Until
+        # D-040 that silenced the escalation whenever the desk that leads held
+        # one control on several lines and another desk was involved too.
         cited = tuple(
             sorted(
-                (row.code for row in recorded if row.owner is lead.owner),
+                {row.code for row in recorded if row.owner is lead.owner},
                 key=lambda code: (_SEVERITY_ORDER[spec_for(code).severity], code.value),
             )
         )

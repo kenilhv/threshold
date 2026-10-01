@@ -193,6 +193,30 @@ class TestTheEscalationIsWritten:
         assert escalation.codes == [ExceptionCode.BANK_DETAILS_CHANGED.value]
         assert escalation.triager_id.startswith("rules-")
 
+    async def test_a_control_raised_on_several_lines_still_escalates(
+        self, sessions: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """D-040, through the real read path. `open_exceptions` returns a row
+        per exception, so a price variance on three lines reaches the tier
+        three times. Before D-040 the packet was refused for citing it three
+        times, the refusal was logged, and this returned None with no row."""
+        async with sessions() as session:
+            result = await make_invoice(
+                session,
+                ExceptionCode.PRICE_VARIANCE,
+                ExceptionCode.PRICE_VARIANCE,
+                ExceptionCode.PRICE_VARIANCE,
+                ExceptionCode.RECEIPT_MISSING,
+            )
+            await session.commit()
+
+            escalation = await TriageService().triage(session, result.id, sessions=sessions)
+            await session.commit()
+
+        assert escalation is not None
+        assert escalation.owner_role == OwnerRole.BUYER.value
+        assert escalation.codes == [ExceptionCode.PRICE_VARIANCE.value]
+
     async def test_a_single_desk_invoice_gets_none(
         self, sessions: async_sessionmaker[AsyncSession]
     ) -> None:

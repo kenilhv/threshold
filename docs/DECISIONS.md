@@ -5,6 +5,46 @@ would otherwise have to reconstruct from the code. Newest first.
 
 ---
 
+## D-040 — A control raised on several lines is cited once
+
+**Date:** 2026-10-01 · **Status:** accepted
+
+Found while reviewing D-039 and older than it. The rules triage tier decides
+which desk should look first when an invoice implicates more than one, and it
+cites every control on that desk. It built the list from the recorded rows, one
+per exception, so a price variance raised on three lines was cited three times.
+`EscalationPacket` refuses that ("the same code twice says nothing twice"), the
+triage service logs the refusal and records nothing, and the invoice got no
+escalation at all. That happened whenever the desk that leads holds one control
+on several lines and another desk is involved too: a price variance on two lines
+beside a missing receipt, or two misread line totals on the clerk's desk beside
+the buyer's price variance. D-039 adds a route into the second shape: a misread
+line now raises `subtotal_mismatch` as well, a blocking code that puts the
+clerk's desk first. On the evaluation corpus that route changes nothing yet,
+because every document with two misread lines also raises `arithmetic_mismatch`,
+which put the clerk first before D-039 too. No triage test, unit or integration,
+had raised a code more than once, which is why none of them saw it.
+
+The tier now cites each code once, in the same order. The packet's refusal of
+repeats stays exactly as it was: it is the boundary a model tier is held to,
+and a model that names one control twice has said something wrong. Only this
+tier's input was ever the problem.
+
+`RULES_VERSION` moves to `rules-2026.10.1`. Neither the ordering nor the wording
+changed, which is what the version has tracked until now, but the tier promises
+its output is reproducible from its version string, and this version produces
+packets the previous one refused.
+
+**Evidence.** `test_triage_rules.py` reproduces both shapes, sweeps every pair
+of codes from two desks, each raised twice, and checks that every arrangement of
+interleaved repeats gives one answer; `test_triage.py` reproduces the first
+shape through the real service and database. Reverting the change fails the
+unit tests and the integration test. An adversarial review then re-derived each
+claim in this record against the code and the evaluation corpus, which is where
+the qualification above about D-039 comes from.
+
+---
+
 ## D-039 — The lines have to add up to the subtotal
 
 **Date:** 2026-10-01 · **Status:** accepted
@@ -103,7 +143,7 @@ had been masking.
   49.98 in all, where either amount put into one link would block.
 - Found during this work and not caused by it: the rules triage tier refuses
   its own escalation when the lead desk holds one code on several lines, because
-  it cites each row's code without removing repeats. Queued separately.
+  it cites each row's code without removing repeats. Queued separately. Fixed in D-040.
 
 ---
 
