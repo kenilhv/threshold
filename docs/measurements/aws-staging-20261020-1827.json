@@ -1,0 +1,119 @@
+{
+  "measured_at": "2026-10-20T18:27:35.358012+00:00",
+  "conditions": {
+    "environment": "staging",
+    "region": "us-west-2",
+    "commit": "fbc25beff494d2ea59bf9e04c3df40d220b51ddf",
+    "image": "842676008129.dkr.ecr.us-west-2.amazonaws.com/threshold-staging:fbc25beff494-dirty-20261020180517",
+    "database_instance_class": "db.t4g.medium",
+    "services": {
+      "api": {
+        "count": 2,
+        "cpu": 512,
+        "memory_mib": 1024
+      },
+      "worker": {
+        "count": 1,
+        "cpu": 1024,
+        "memory_mib": 2048
+      }
+    },
+    "ingress": "the measuring machine's /32 only (address not recorded)",
+    "postgres": "PostgreSQL 16.13 on aarch64-unknown-linux-gnu, compiled by aarch64-unknown-linux-gnu-gcc (GCC) 12.4.0, 64-bit",
+    "schema_revision": "0014_payment_per_document",
+    "workers_seen": 1,
+    "client": "this machine, over the public internet, to the application load balancer",
+    "identity_provider": "none configured; authenticated routes answer 503 by design",
+    "invoice_layout": "continental_tabular, one layout, unique invoice numbers"
+  },
+  "submit": {
+    "count": 60,
+    "concurrency": 8,
+    "accepted_202": 60,
+    "duplicate_200": 0,
+    "errors": 0,
+    "wall_seconds": 2.79,
+    "submits_per_second": 21.49,
+    "accept_latency": {
+      "name": "accept",
+      "n": 60,
+      "min_ms": 79.2,
+      "p50_ms": 109.1,
+      "p95_ms": 567.8,
+      "p99_ms": 639.3,
+      "max_ms": 639.3,
+      "mean_ms": 201.3
+    }
+  },
+  "pipeline": {
+    "scope": {
+      "document_ids": 60,
+      "since": "2026-10-20T18:25:36.763437+00:00"
+    },
+    "received": 60,
+    "extracted": 60,
+    "matched": 60,
+    "dispositions": {
+      "auto_approve": 60
+    },
+    "decisions": {
+      "system:auto_approved": 60
+    },
+    "payments": {
+      "failed": 2,
+      "settled": 58
+    },
+    "jobs": {
+      "succeeded": 358
+    },
+    "dead_letters": {
+      "total": 0,
+      "unreplayed": 0
+    },
+    "settle": {
+      "n": 60,
+      "min_ms": 1946.1,
+      "p50_ms": 6478.5,
+      "p95_ms": 7643.8,
+      "p99_ms": 7690.6,
+      "max_ms": 7690.6,
+      "mean_ms": 6320.1
+    },
+    "trial_balance": {
+      "accounts": {
+        "accounts_payable": -157652,
+        "cash": -4571908,
+        "cash_in_transit": 0,
+        "expense": 4729560
+      },
+      "sum_minor": 0,
+      "balanced": true
+    },
+    "roles": [
+      {
+        "name": "threshold",
+        "superuser": false,
+        "bypassrls": false
+      },
+      {
+        "name": "threshold_api",
+        "superuser": false,
+        "bypassrls": false
+      },
+      {
+        "name": "threshold_app",
+        "superuser": false,
+        "bypassrls": false
+      },
+      {
+        "name": "threshold_worker",
+        "superuser": false,
+        "bypassrls": false
+      }
+    ],
+    "postgres": "PostgreSQL 16.13 on aarch64-unknown-linux-gnu, compiled by aarch64-unknown-linux-gnu-gcc (GCC) 12.4.0, 64-bit",
+    "schema_revision": "0014_payment_per_document",
+    "workers_seen": 1,
+    "waited_seconds": 0.2
+  }
+}

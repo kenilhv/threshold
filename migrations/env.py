@@ -7,6 +7,13 @@ rejects something, it is rejected at migration time rather than at 3am.
 
 Migrations are their own unit of work, never an application-startup side effect,
 so two API replicas can never race to migrate the same database.
+
+The database URL goes straight to SQLAlchemy and never through Alembic's
+``config``. That object is a ``ConfigParser``, which reads ``%`` as interpolation
+syntax, and a password that Settings has percent-encoded — which is any
+password RDS generates — made ``set_main_option`` raise before a connection was
+attempted, with the URL in the traceback. Found by review of the AWS deploy
+path before it ran; never seen locally, where the compose URL is a literal.
 """
 
 from __future__ import annotations
@@ -16,7 +23,7 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import Connection, pool
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from threshold.config.settings import get_settings
 from threshold.domain.models import Base
@@ -26,7 +33,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", str(get_settings().database_url))
+DATABASE_URL = str(get_settings().database_url)
 
 target_metadata = Base.metadata
 
@@ -38,7 +45,7 @@ def _include_object(obj: object, name: str | None, type_: str, *_: object) -> bo
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        url=DATABASE_URL,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -66,11 +73,7 @@ def _run_migrations(connection: Connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = create_async_engine(DATABASE_URL, poolclass=pool.NullPool)
     async with connectable.connect() as connection:
         await connection.run_sync(_run_migrations)
     await connectable.dispose()

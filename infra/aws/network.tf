@@ -8,11 +8,57 @@
 # would be the first thing that did, and adding a NAT when there is a rail to
 # reach is a smaller change than explaining an idle one now.
 #
-# The endpoints are also the stricter posture: a compromised worker cannot
-# exfiltrate over HTTP because there is no egress, only four endpoint policies.
+# The endpoints are also the stricter posture. There is no route to the
+# internet, and every endpoint carries a policy that refuses any principal
+# outside this account, so a compromised worker cannot hand what it read to a
+# bucket, a log group or a secret that somebody else owns through the one path
+# it does have. (An endpoint without a policy allows any principal; the route
+# alone would not have been the control the first draft of this file said it
+# was.)
 
 data "aws_availability_zones" "available" {
   state = "available"
+}
+
+data "aws_iam_policy_document" "endpoint_this_account_only" {
+  statement {
+    effect    = "Allow"
+    actions   = ["*"]
+    resources = ["*"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:PrincipalAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+}
+
+# The S3 gateway needs one more allowance. ECR hands a task its image layers as
+# presigned S3 URLs signed by ECR's own identity, so the request that fetches a
+# layer is not made by this account, and the policy above refused it: the first
+# deploy failed with CannotPullContainerError at exactly that point. This is
+# AWS's documented minimum for ECR behind a restricted gateway endpoint: read
+# access to the regional bucket ECR serves layers from, and nothing else.
+data "aws_iam_policy_document" "s3_endpoint" {
+  source_policy_documents = [data.aws_iam_policy_document.endpoint_this_account_only.json]
+
+  statement {
+    sid       = "EcrImageLayers"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["arn:aws:s3:::prod-${var.region}-starport-layer-bucket/*"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+  }
 }
 
 resource "aws_vpc" "main" {
@@ -89,6 +135,7 @@ resource "aws_vpc_endpoint" "s3" {
   service_name      = "com.amazonaws.${var.region}.s3"
   vpc_endpoint_type = "Gateway"
   route_table_ids   = [aws_route_table.private.id]
+  policy            = data.aws_iam_policy_document.s3_endpoint.json
 
   tags = { Name = "${local.name}-s3" }
 }
@@ -114,6 +161,7 @@ resource "aws_vpc_endpoint" "interface" {
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.endpoints.id]
   private_dns_enabled = true
+  policy              = data.aws_iam_policy_document.endpoint_this_account_only.json
 
   tags = { Name = "${local.name}-${replace(each.value, ".", "-")}" }
 }
@@ -131,12 +179,32 @@ resource "aws_security_group" "alb" {
   tags        = { Name = "${local.name}-alb" }
 }
 
+# Who may reach the load balancer at all. POST /v1/documents takes no
+# credential by design (suppliers are not users), so for a measurement run the
+# answer is "the machine doing the measuring", and `make aws-up` passes its own
+# address. Opening it to the world is a decision, not a default: see
+# `ingress_cidrs` in variables.tf.
 resource "aws_vpc_security_group_ingress_rule" "alb_https" {
+  for_each = local.https ? toset(var.ingress_cidrs) : toset([])
+
   security_group_id = aws_security_group.alb.id
-  description       = "HTTPS from anywhere"
-  cidr_ipv4         = "0.0.0.0/0"
+  description       = "HTTPS from ${each.value}"
+  cidr_ipv4         = each.value
   from_port         = 443
   to_port           = 443
+  ip_protocol       = "tcp"
+}
+
+# Port 80 is the API itself when no domain was given, and a redirect to 443
+# when one was (compute.tf). Either way the load balancer has to answer it.
+resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  for_each = toset(var.ingress_cidrs)
+
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTP from ${each.value}"
+  cidr_ipv4         = each.value
+  from_port         = 80
+  to_port           = 80
   ip_protocol       = "tcp"
 }
 
@@ -165,16 +233,34 @@ resource "aws_vpc_security_group_ingress_rule" "tasks_from_alb" {
   ip_protocol                  = "tcp"
 }
 
-# Egress to 443 and nowhere else: that reaches the interface endpoints and the
-# S3 gateway, and no route to the internet exists for it to use anyway. Both,
-# because a route added later should not silently become an exfiltration path.
+# Egress to 443 and nowhere else, and no route to the internet exists for it to
+# use anyway. Both, because a route added later should not silently become an
+# exfiltration path.
+#
+# Two rules, because the two kinds of endpoint are reached differently. An
+# interface endpoint is an address inside the VPC, so the VPC's own CIDR covers
+# it. The S3 gateway is a route, not an address: traffic to it leaves for S3's
+# public ranges, which the VPC CIDR does not contain. A tasks group with only
+# the first rule cannot reach the bucket, and cannot pull an image either,
+# because ECR keeps the layers in S3. The gateway publishes those ranges as a
+# prefix list, and that is what the second rule allows.
 resource "aws_vpc_security_group_egress_rule" "tasks_https" {
   security_group_id = aws_security_group.tasks.id
-  description       = "AWS endpoints"
+  description       = "Interface endpoints"
   cidr_ipv4         = var.vpc_cidr
   from_port         = 443
   to_port           = 443
   ip_protocol       = "tcp"
+}
+
+resource "aws_vpc_security_group_egress_rule" "tasks_s3_gateway" {
+  security_group_id = aws_security_group.tasks.id
+  # No apostrophes: EC2 rejects them in rule descriptions.
+  description    = "S3 through the gateway endpoint: the bucket, and the image layers ECR serves"
+  prefix_list_id = aws_vpc_endpoint.s3.prefix_list_id
+  from_port      = 443
+  to_port        = 443
+  ip_protocol    = "tcp"
 }
 
 resource "aws_vpc_security_group_egress_rule" "tasks_to_database" {

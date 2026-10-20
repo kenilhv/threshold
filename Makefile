@@ -115,7 +115,9 @@ verify: lint check-alerts test eval-check ## What CI runs on every commit
 # Through the pinned image rather than a local install: nobody should have to
 # install Terraform to run this repository's gate, and the version that
 # validates in CI should be the version that validates here.
-TERRAFORM = docker run --rm -v "$(CURDIR)/infra/aws:/w" -w /w hashicorp/terraform:1.9
+# MSYS_NO_PATHCONV: under Git Bash on Windows, `-w /w` is otherwise rewritten to
+# a drive letter before Docker sees it, and the image refuses to start.
+TERRAFORM = MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/infra/aws:/w" -w /w hashicorp/terraform:1.9
 
 .PHONY: lock
 lock: ## Re-pin constraints.txt to this environment. Run only after the full suite passed here.
@@ -130,6 +132,19 @@ tf-validate: ## Check the AWS Terraform is well-formed. Never applies anything.
 	$(TERRAFORM) fmt -check -diff
 	$(TERRAFORM) init -backend=false -input=false
 	$(TERRAFORM) validate
+
+# The real thing. Each of these needs AWS credentials in the environment or
+# ~/.aws; none of them takes a credential as an argument. `aws-up` and
+# `aws-down` ask before they act.
+.PHONY: aws-plan aws-up aws-verify aws-down
+aws-plan: ## Show what aws-up would create. Creates nothing.
+	python scripts/deploy_aws.py plan
+aws-up: ## Build, push, apply, migrate, seed, and wait for the API. Bills until aws-down.
+	python scripts/deploy_aws.py up
+aws-verify: ## Submit invoices to the deployed API and measure the pipeline from inside the VPC
+	python scripts/deploy_aws.py verify
+aws-down: ## Destroy everything aws-up created
+	python scripts/deploy_aws.py down
 
 # ------------------------------------------------------------- load test ---
 

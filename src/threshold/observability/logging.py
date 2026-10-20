@@ -35,6 +35,8 @@ _REDACTED_KEYS = frozenset(
         "authorization",
         "api_key",
         "s3_secret_access_key",
+        "db_password",
+        "database_url",
     }
 )
 

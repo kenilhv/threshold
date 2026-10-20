@@ -82,12 +82,10 @@ jobs:
         run: python scripts/check_migration_graph.py
 
   terraform:
-    # The deployment description, checked and never applied. `terraform
-    # validate` says the configuration is well-formed and internally consistent;
-    # it does not say AWS would accept it, and infra/aws/README.md does not
-    # claim otherwise. Applying it would cost money to host a demo nobody
-    # visits, and would prove less than the interface that makes moving there a
-    # configuration change.
+    # The deployment description. `terraform validate` says the configuration
+    # is well-formed and internally consistent; it does not say AWS would accept
+    # it. That is proved, when it is proved, by `make aws-up` from a machine
+    # with credentials, and recorded in docs/measurements; CI never applies.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:

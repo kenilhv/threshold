@@ -12,3 +12,11 @@ docs/
 tests/
 *.md
 !README.md
+# Not part of the image, and large: provider binaries, state, media.
+infra/
+brag-output/
+project-reports/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+uv.lock

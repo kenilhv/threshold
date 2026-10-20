@@ -256,8 +256,8 @@ console/        the operator console (Next.js, back-end for front-end)
 evals/          the extraction evaluation harness and its committed baseline
 migrations/     Alembic, every revision reversible and proved so in CI
 infra/local/    compose, the Keycloak realm, Prometheus rules, the Grafana dashboard
-docs/           ARCHITECTURE.md, DECISIONS.md (41 records), THREAT-MODEL.md, 7 runbooks
-tests/unit/     793 tests, no stack required
+docs/           ARCHITECTURE.md, DECISIONS.md (42 records), THREAT-MODEL.md, 7 runbooks
+tests/unit/     802 tests, no stack required
 tests/integration/  406 tests, requires `make up`
 ```
 
@@ -412,9 +412,9 @@ reason is stated where it happens rather than implied.
       is how the auto-approval hole above was found. A document that cites its
       evidence can be checked, and one that cannot is decoration.
 - [x] **M10 — Terraform, load test, measured numbers.** `infra/aws` describes
-      the deployment in Terraform that `make tf-validate` checks and nothing
-      ever applies: spending money to host a demo proves less than the interface
-      that makes the move a configuration change. Writing it corrected a claim
+      the deployment in Terraform that `make tf-validate` checks on every
+      commit and `make aws-up` applies on demand for a measurement, then
+      `make aws-down` destroys: nothing is kept running to host a demo. Writing it corrected a claim
       this README had carried since M0 — that the job table becomes SQS behind
       an interface — which is true of the interface and false of the
       guarantees, since enqueue happens inside the transaction that writes the
@@ -462,6 +462,32 @@ demo-queue`, which is a state anybody can reproduce, and the committed files
 record the document count at the start of each run — 69 and 219, since the
 second run inherits the first one's invoices.
 
+## Measured, on AWS
+
+Once, on 2026-10-20, in `us-west-2`, from `make aws-up` to `make aws-down` in
+about an hour ([D-041](docs/DECISIONS.md)). ECS Fargate ran the API twice over
+(0.5 vCPU, 1 GiB each) and the worker once (1 vCPU, 2 GiB) behind an ALB, with
+RDS PostgreSQL 16.13 on a `db.t4g.medium`, S3, Secrets Manager and VPC endpoints
+in place of NAT. Sixty invoices went in from a laptop in California.
+
+| 60 invoices, 8 concurrent, over the public internet | |
+|---|---|
+| accepted / duplicates / errors | 60 / 0 / 0 |
+| accept (`POST` → 202), p50 / p95 | 109 ms / 568 ms |
+| received → matched, p50 / p95 | 6.5 s / 7.6 s |
+| matched / auto-approved | 60 / 60 |
+| paid through the sandbox rail | 58 settled, 2 refused (the rail's 1-in-32 design rate) |
+| dead letters · trial balance | 0 · sums to zero |
+
+Accept matches the laptop at the median and spreads at the tail, which is the
+internet. Settle is about three times the laptop's 2.2 s: one vCPU parsing PDFs
+against a burstable database, recorded as such. The run is committed as
+[`docs/measurements/aws-staging-20261020-1827.json`](docs/measurements/aws-staging-20261020-1827.json)
+with the image, task sizes, instance class and schema revision it was taken
+under, and [`infra/aws/README.md`](infra/aws/README.md) lists what the first,
+never-applied draft of the module got wrong, since applying it is what found
+out.
+
 Every figure is a floor. This runs against Docker Desktop on a laptop, sharing
 a CPU with Postgres, MinIO, Keycloak, Grafana, Tempo and Prometheus, against one
 worker — `worker_desired_count` defaults to 1 in the Terraform, and since M10
@@ -490,9 +516,10 @@ Nothing here is written to be local-only. The differences are two:
 | Keycloak | Cognito, or an existing IdP |
 
 Terraform describing the AWS shape lives in [`infra/aws`](infra/aws), is
-validated by `make tf-validate` and CI, and is deliberately never applied:
-spending money to host a demo proves less than the interface that makes the move
-a configuration change.
+validated by `make tf-validate` and CI, and applied on demand by `make aws-up`
+for a measurement that `make aws-down` then destroys. Nothing is kept running
+to host a demo; what is kept is the measurement and the deploy path that
+produced it.
 
 One row of that table was wrong for nine milestones, and writing the Terraform
 is what showed it. The queue driver does sit behind an interface — `Queue` and

@@ -100,7 +100,7 @@ redirected after approval, a second live payment for one invoice.
   auto-approval, review and block. All vendors, orders and amounts are
   synthetic.
 - Measured numbers in `docs/measurements/`, an extraction evaluation over 400
-  synthetic documents in `evals/`, a threat model, and 41 decision records.
+  synthetic documents in `evals/`, a threat model, and 42 decision records.
 - **Absent, and must not be fabricated:** real customers, testimonials, logos
   of companies using it, production deployment, uptime or volume figures,
   pricing, certifications.

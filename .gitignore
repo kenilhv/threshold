@@ -23,6 +23,7 @@ node_modules/
 infra/aws/.terraform/
 *.tfstate
 *.tfstate.backup
+*.tfstate.lock.info
 *.tfvars
 !*.tfvars.example
 

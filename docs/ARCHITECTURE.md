@@ -623,17 +623,16 @@ choose who receives the money.
 |---|---|---|
 | MinIO | S3 | endpoint URL |
 | Postgres container | RDS Postgres | connection string |
-| `job` table + `SKIP LOCKED` | SQS + visibility timeout + redrive | queue driver (behind an interface) |
+| `job` table + `SKIP LOCKED` | still the `job` table, on RDS | none (see `infra/aws/README.md` for why SQS is not a free swap) |
 | Compose services | ECS Fargate behind an ALB | none |
-| Env files | Secrets Manager | secret source (behind an interface) |
+| Env files | Secrets Manager, injected by the task definition | none: the same environment variables arrive by a different route |
 | Keycloak | Cognito or an existing IdP | issuer URL |
 
-Two places the code paths genuinely differ — the queue driver and the secret
-source — and both sit behind an interface with tests.
-
-Terraform describing the AWS shape is validated in CI from M10 and deliberately
-never applied. Paying to host a demo proves less than the interface that makes
-it a configuration change.
+The code delta is empty: the database arrives as parts that `Settings`
+composes into a URL, S3 credentials come from the task role, and nothing else
+changes. Terraform describing the AWS shape is validated in CI from M10 and
+applied on demand by `make aws-up` for a measurement that `make aws-down` then
+destroys; nothing is kept running to host a demo.
 
 ---
 

@@ -1,4 +1,4 @@
-# The two long-running services, the one-shot migration task, and the ALB.
+# The two long-running services, the one-shot administrative task, and the ALB.
 
 resource "aws_ecs_cluster" "main" {
   name = local.name
@@ -15,7 +15,7 @@ resource "aws_cloudwatch_log_group" "main" {
 }
 
 locals {
-  image = "${var.ecr_repository_url}:${var.image_tag}"
+  image = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
 
   log_configuration = {
     logDriver = "awslogs"
@@ -64,12 +64,13 @@ resource "aws_ecs_task_definition" "api" {
 
       environment = concat(local.common_environment, [
         { name = "THRESHOLD_SERVICE_NAME", value = "threshold-api" },
+        { name = "THRESHOLD_DB_USER", value = local.database_role_names.api },
       ])
 
       secrets = [
         {
-          name      = "THRESHOLD_DATABASE_URL"
-          valueFrom = aws_secretsmanager_secret.api_database_url.arn
+          name      = "THRESHOLD_DB_PASSWORD"
+          valueFrom = aws_secretsmanager_secret.database_password["api"].arn
         },
       ]
 
@@ -114,7 +115,11 @@ resource "aws_ecs_service" "api" {
     rollback = true
   }
 
-  depends_on = [aws_lb_listener.https]
+  depends_on = [
+    aws_lb_listener.https,
+    aws_lb_listener.http_forward,
+    aws_lb_listener.http_redirect,
+  ]
 }
 
 # ------------------------------------------------------------------- worker --
@@ -137,12 +142,13 @@ resource "aws_ecs_task_definition" "worker" {
 
       environment = concat(local.common_environment, [
         { name = "THRESHOLD_SERVICE_NAME", value = "threshold-worker" },
+        { name = "THRESHOLD_DB_USER", value = local.database_role_names.worker },
       ])
 
       secrets = [
         {
-          name      = "THRESHOLD_DATABASE_URL"
-          valueFrom = aws_secretsmanager_secret.worker_database_url.arn
+          name      = "THRESHOLD_DB_PASSWORD"
+          valueFrom = aws_secretsmanager_secret.database_password["worker"].arn
         },
       ]
 
@@ -191,7 +197,14 @@ resource "aws_ecs_service" "worker" {
 #
 # It holds the schema owner's credential -- the RDS-managed master secret --
 # and it exits. Nothing long-running holds that credential, which is the
-# property D-034 is about.
+# property D-034 is about. The same definition runs the seed and the in-VPC
+# verification (scripts/aws_verify.py) with a command override, because both
+# need the owner and neither needs the bucket: it has no task role at all.
+#
+# It also receives the three role passwords, because migration 0012 creates
+# the roles and reads their passwords from exactly these variables; that is
+# what lets the API and the worker connect with the secrets above the moment
+# the schema exists.
 
 resource "aws_ecs_task_definition" "migrate" {
   family                   = "${local.name}-migrate"
@@ -210,12 +223,25 @@ resource "aws_ecs_task_definition" "migrate" {
 
       environment = concat(local.common_environment, [
         { name = "THRESHOLD_SERVICE_NAME", value = "threshold-migrate" },
+        { name = "THRESHOLD_DB_USER", value = aws_db_instance.main.username },
       ])
 
       secrets = [
         {
-          name      = "THRESHOLD_DATABASE_URL"
-          valueFrom = "${aws_db_instance.main.master_user_secret[0].secret_arn}:url::"
+          name      = "THRESHOLD_DB_PASSWORD"
+          valueFrom = "${aws_db_instance.main.master_user_secret[0].secret_arn}:password::"
+        },
+        {
+          name      = "THRESHOLD_API_DB_PASSWORD"
+          valueFrom = aws_secretsmanager_secret.database_password["api"].arn
+        },
+        {
+          name      = "THRESHOLD_WORKER_DB_PASSWORD"
+          valueFrom = aws_secretsmanager_secret.database_password["worker"].arn
+        },
+        {
+          name      = "THRESHOLD_APP_DB_PASSWORD"
+          valueFrom = aws_secretsmanager_secret.database_password["app"].arn
         },
       ]
 
@@ -260,12 +286,36 @@ resource "aws_lb_target_group" "api" {
   deregistration_delay = 30
 }
 
+# With a domain: HTTPS on 443 with an ACM certificate, and 80 redirects to it.
+# Without one: plain HTTP on 80 at the load balancer's own hostname.
+#
+# A domain takes two applies, and the module does not pretend otherwise. The
+# certificate is requested with DNS validation, and a listener cannot attach a
+# certificate that is still pending, so the first apply with `api_domain_name`
+# fails at the HTTPS listener. The `certificate_validation_records` output
+# says which CNAME the zone's owner has to create; once ACM has issued, the
+# second apply succeeds. Automating that needs a Route 53 zone this module
+# does not assume anybody has.
+
+resource "aws_acm_certificate" "api" {
+  count = local.https ? 1 : 0
+
+  domain_name       = var.api_domain_name
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
 resource "aws_lb_listener" "https" {
+  count = local.https ? 1 : 0
+
   load_balancer_arn = aws_lb.api.arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate.api.arn
+  certificate_arn   = aws_acm_certificate.api[0].arn
 
   default_action {
     type             = "forward"
@@ -273,11 +323,33 @@ resource "aws_lb_listener" "https" {
   }
 }
 
-resource "aws_acm_certificate" "api" {
-  domain_name       = var.api_domain_name
-  validation_method = "DNS"
+resource "aws_lb_listener" "http_redirect" {
+  count = local.https ? 1 : 0
 
-  lifecycle {
-    create_before_destroy = true
+  load_balancer_arn = aws_lb.api.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+resource "aws_lb_listener" "http_forward" {
+  count = local.https ? 0 : 1
+
+  load_balancer_arn = aws_lb.api.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
   }
 }
