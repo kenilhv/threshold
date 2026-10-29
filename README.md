@@ -540,13 +540,13 @@ An AI-assisted build, directed and reviewed by me. Every commit says so in its
 trailer, and this section exists so the `git log` is not where you find that
 out.
 
-What that means concretely. The milestone structure is mine, and so is what
-counts as done at the end of each one: a working system, a gate that passes, and
-a written record of what was decided and why. So are the boundaries — that the
-agent gets no write tools, that identity comes from the database rather than the
-application, that the ledger is double-entry rather than a balance column. The
-implementation is collaborative. The review process is the part I would point
-at first.
+What that means concretely. The coding agent proposed the milestone plan and the
+boundaries — that the system's own agent gets no write tools, that identity
+comes from the database rather than the application, that the ledger is
+double-entry rather than a balance column — and wrote the code. I set the goal
+and the constraints, approved the plan and the start of each milestone, and sent
+work back when I could not follow what had been built. The review process is the
+part I would point at first.
 
 Because the interesting problem in working this way is not getting code written.
 It is that a confident wrong answer looks exactly like a right one, and the

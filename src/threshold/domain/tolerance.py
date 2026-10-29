@@ -189,7 +189,7 @@ DEFAULT_POLICY: Final = TolerancePolicy(
     ),
     # Derived, not chosen. Over 3000 corpus invoices the gate's own input
     # takes four values; every document at 0.616 or above was read correctly
-    # (456 of 456, Wilson lower bound 0.9941 at 99%), and every one of the
+    # (456 of 456, one-sided 95% Wilson bound 0.9941), and every one of the
     # twelve at 0.580 was wrong. So the evidence identifies an interval,
     # (0.580, 0.616], inside which every threshold accepts exactly the same
     # invoices and carries exactly the same measured risk.

@@ -1288,11 +1288,12 @@ wrote. It cannot verify that what reportlab wrote resembles an invoice a real
 accounts-payable function receives, and the honest expectation is "partly".
 
 So the claim M6 supports is narrow and should be quoted narrowly: *on documents
-of this kind, invoices above the gate are read correctly at a rate whose 99%
-lower bound is 0.9941*. It is not a production accuracy figure, and a reader who
-takes it as one has been misled by the rigour of everything around it — which is
-exactly the failure mode a careful evaluation invites. Precision about the wrong
-population is still wrong, and it is more persuasive than being vague.
+of this kind, invoices above the gate are read correctly at a rate whose
+one-sided 95% lower bound is 0.9941*. It is not a production accuracy figure,
+and a reader who takes it as one has been misled by the rigour of everything
+around it — which is exactly the failure mode a careful evaluation invites.
+Precision about the wrong population is still wrong, and it is more persuasive
+than being vague.
 
 The remedy is not more engineering. It is a few dozen real invoices with a
 human-made answer key, held out from everything, scored by the same harness. A
@@ -1336,7 +1337,7 @@ derivation, rendered across four layouts from specs that are their own answer
 key. `make eval` reproduces it. Over 3000 documents the gate's own input takes
 four values:
 
-| gate confidence | documents | read correctly | pooled lower bound |
+| gate confidence | documents | read correctly | pooled lower bound (one-sided 95%) |
 | --- | --- | --- | --- |
 | 0.616 | 456 | **456 (100%)** | 0.9941 |
 | 0.580 | 12 | **0 (0%)** | 0.9593 |
@@ -1345,8 +1346,14 @@ four values:
 
 So the evidence identifies an **interval**, not a point. Every threshold in
 (0.580, 0.616] accepts exactly the same invoices and carries exactly the same
-measured risk: 456 accepted, none wrong, and a 99% lower bound of 0.9941 on the
-accuracy of everything let through.
+measured risk: 456 accepted, none wrong, and a one-sided 95% lower bound of
+0.9941 on the accuracy of everything let through.
+
+> **Correction, 2026-10-28.** This record first called 0.9941 a 99% lower bound.
+> It is the one-sided 95% Wilson bound (z = 1.645, which is what
+> `evals/calibration.py` has always computed); at one-sided 99% the same 456 of
+> 456 gives 0.9883. The label was wrong. No measurement, threshold or behaviour
+> changed.
 
 0.60 rather than 0.616 because the interval is what was measured and a point
 inside it is what should be written down. 0.616 is an artefact of this
